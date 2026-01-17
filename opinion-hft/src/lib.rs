@@ -26,9 +26,13 @@ pub mod config;
 pub mod data;
 pub mod error;
 pub mod execution;
+pub mod strategy;
 pub mod types;
+pub mod telemetry;
 
 pub use config::Config;
+pub use config::ConfigBuilder;
+pub use config::ConfirmationMode;
 pub use error::{Error, Result};
 
 /// Re-export commonly used types

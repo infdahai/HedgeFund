@@ -27,7 +27,7 @@ pub enum Error {
     // ============ API Errors ============
     /// HTTP request failed
     #[error("HTTP request failed: {0}")]
-    HttpError(#[from] reqwest::Error),
+    HttpError(#[from] Box<dyn std::error::Error + Send + Sync>),
 
     /// API returned an error response
     #[error("API error {status}: {message}")]
@@ -50,9 +50,14 @@ pub enum Error {
     #[error("WebSocket message parse error: {0}")]
     WebSocketParseError(String),
 
+    /// Parsing error
+    #[error("parse error: {0}")]
+    ParseError(String),
+
     /// WebSocket subscription failed
     #[error("WebSocket subscription failed for channel: {channel}")]
     SubscriptionError { channel: String },
+
 
     /// WebSocket disconnected unexpectedly
     #[error("WebSocket disconnected: {reason}")]
@@ -118,7 +123,17 @@ pub enum Error {
     /// Channel send error (internal communication)
     #[error("channel send error: {0}")]
     ChannelError(String),
+
+    // ============ Risk Management Errors ============
+    /// Risk limit exceeded (latency, drift, etc.)
+    #[error("Risk limit exceeded: {0}")]
+    RiskLimitExceeded(String),
+
+    /// System halted due to critical failure
+    #[error("System halted: {0}")]
+    SystemHalted(String),
 }
+
 
 impl Error {
     /// Returns true if this error is retryable.

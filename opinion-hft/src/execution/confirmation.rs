@@ -7,26 +7,32 @@ use tokio::sync::mpsc;
 use crate::chain::client::ChainClient;
 use crate::config::{ConfirmationConfig, ConfirmationMode};
 use crate::error::{Error, Result};
-use crate::types::order::OrderSide;
+use crate::types::order::{OrderIntent, OrderSide};
 
 #[derive(Debug, Clone)]
 pub struct PendingOrder {
     pub order_id: String,
+    pub market_id: String,
     pub token_id: U256,
     pub side: OrderSide,
+    pub expected_price: f64,
     pub position_before: U256,
     pub submitted_at: Instant,
+    pub hedge_intent: Option<OrderIntent>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConfirmedOrder {
     pub order_id: String,
+    pub market_id: String,
     pub token_id: U256,
     pub side: OrderSide,
     pub actual_fill: U256,
+    pub expected_price: f64,
     pub position_before: U256,
     pub position_after: U256,
     pub confirmation_time: Duration,
+    pub hedge_intent: Option<OrderIntent>,
 }
 
 pub struct ConfirmationTracker {
@@ -65,10 +71,10 @@ impl ConfirmationTracker {
         self.pending.contains_key(order_id)
     }
 
-    pub async fn on_order_finish(&self, order_id: &str, ws_fill: Option<U256>) -> Result<()> {
+    pub async fn on_order_finish(&self, order_id: &str, ws_fill: Option<U256>) -> Result<Option<ConfirmedOrder>> {
         let pending = match self.pending.remove(order_id) {
             Some((_, p)) => p,
-            None => return Ok(()),
+            None => return Ok(None),
         };
 
         let (actual_fill, position_after) = match self.config.mode {
@@ -81,11 +87,28 @@ impl ConfirmationTracker {
                 (fill, position_after)
             }
             ConfirmationMode::OnChainOnly | ConfirmationMode::Hybrid => {
-                let position_after = self
-                    .chain_client
-                    .balance_of(pending.token_id)
-                    .await
-                    .unwrap_or(U256::ZERO);
+                let mut position_after = U256::ZERO;
+                let mut attempts = 0;
+                let max_attempts = 3;
+
+                // Retry loop for chain data consistency
+                while attempts < max_attempts {
+                    position_after = self
+                        .chain_client
+                        .balance_of(pending.token_id)
+                        .await
+                        .unwrap_or(U256::ZERO);
+
+                    // If position changed, we're good
+                    if position_after != pending.position_before {
+                        break;
+                    }
+
+                    // If not changed, wait a bit (chain might be slightly behind WS)
+                    // User report: "Chain is faster than API", but WS push might beat chain indexing slightly
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    attempts += 1;
+                }
 
                 let actual_fill = match pending.side {
                     OrderSide::Buy => position_after.saturating_sub(pending.position_before),
@@ -98,20 +121,23 @@ impl ConfirmationTracker {
 
         let confirmed = ConfirmedOrder {
             order_id: pending.order_id,
+            market_id: pending.market_id,
             token_id: pending.token_id,
             side: pending.side,
             actual_fill,
+            expected_price: pending.expected_price,
             position_before: pending.position_before,
             position_after,
             confirmation_time: pending.submitted_at.elapsed(),
+            hedge_intent: pending.hedge_intent,
         };
 
         self.confirmation_tx
-            .send(confirmed)
+            .send(confirmed.clone())
             .await
             .map_err(|_| Error::ChannelError("confirmation channel closed".into()))?;
 
-        Ok(())
+        Ok(Some(confirmed))
     }
 
     pub fn cancel_order(&self, order_id: &str) -> Option<PendingOrder> {
@@ -156,12 +182,14 @@ mod tests {
         let config = ChainConfig {
             rpc_url: "https://bsc-dataseed.binance.org".into(),
             chain_id: 56,
-            private_key: String::new(),
+            private_key: crate::auth::secret::PrivateKey::default(),
+            eoa_address: String::new(),
             conditional_tokens_address: CONDITIONAL_TOKENS_ADDRESS.into(),
             rpc_timeout: Duration::from_secs(5),
         };
         ChainClient::new(&config, Address::ZERO).unwrap()
     }
+
 
     fn mock_config(mode: ConfirmationMode) -> ConfirmationConfig {
         ConfirmationConfig {
@@ -187,11 +215,15 @@ mod tests {
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(123),
             side: OrderSide::Buy,
+            expected_price: 0.5,
             position_before: U256::from(100),
             submitted_at: Instant::now(),
+            hedge_intent: None,
         };
+
 
         tracker.register_order(pending);
         assert_eq!(tracker.pending_count(), 1);
@@ -206,11 +238,15 @@ mod tests {
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(123),
             side: OrderSide::Buy,
+            expected_price: 0.5,
             position_before: U256::from(100),
             submitted_at: Instant::now(),
+            hedge_intent: None,
         };
+
 
         tracker.register_order(pending);
         assert_eq!(tracker.pending_count(), 1);
@@ -228,18 +264,24 @@ mod tests {
 
         let old_pending = PendingOrder {
             order_id: "old-order".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(123),
             side: OrderSide::Buy,
+            expected_price: 0.5,
             position_before: U256::from(100),
             submitted_at: Instant::now() - Duration::from_secs(60),
+            hedge_intent: None,
         };
 
         let new_pending = PendingOrder {
             order_id: "new-order".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(456),
             side: OrderSide::Sell,
+            expected_price: 0.5,
             position_before: U256::from(200),
             submitted_at: Instant::now(),
+            hedge_intent: None,
         };
 
         tracker.register_order(old_pending);
@@ -261,11 +303,15 @@ mod tests {
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(123),
             side: OrderSide::Buy,
+            expected_price: 0.5,
             position_before: U256::from(100),
             submitted_at: Instant::now(),
+            hedge_intent: None,
         };
+
 
         tracker.register_order(pending);
 
@@ -288,11 +334,15 @@ mod tests {
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
+            market_id: "market-1".into(),
             token_id: U256::from(123),
             side: OrderSide::Buy,
+            expected_price: 0.5,
             position_before: U256::from(100),
             submitted_at: Instant::now(),
+            hedge_intent: None,
         };
+
 
         tracker1.register_order(pending);
 

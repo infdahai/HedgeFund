@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use simd_json;
+use crate::error::{Result, Error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -11,6 +13,17 @@ pub enum WsMessage {
     Ping,
     #[serde(rename = "pong")]
     Pong,
+    #[serde(rename = "trade.order.update")]
+    OrderUpdate(OrderUpdate),
+    #[serde(rename = "trade.record.new")]
+    TradeRecord(TradeRecord),
+}
+
+impl WsMessage {
+    pub fn parse(data: &mut [u8]) -> Result<Self> {
+        simd_json::from_slice(data)
+            .map_err(|e| Error::ParseError(e.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

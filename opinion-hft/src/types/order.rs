@@ -28,21 +28,21 @@ impl OrderSide {
 pub enum SignatureType {
     #[default]
     Eoa = 0,
-    Poly = 1,
-    PolyProxy = 2,
+    PolyProxy = 1,
+    PolyGnosisSafe = 2,
 }
 
 impl SignatureType {
     pub fn as_u8(&self) -> u8 {
         match self {
             SignatureType::Eoa => 0,
-            SignatureType::Poly => 1,
-            SignatureType::PolyProxy => 2,
+            SignatureType::PolyProxy => 1,
+            SignatureType::PolyGnosisSafe => 2,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub salt: U256,
     pub maker: Address,
@@ -98,13 +98,13 @@ impl Order {
         self
     }
 
-    pub fn with_taker(mut self, taker: Address) -> Self {
-        self.taker = taker;
+    pub fn with_salt(mut self, salt: U256) -> Self {
+        self.salt = salt;
         self
     }
 
-    pub fn with_salt(mut self, salt: U256) -> Self {
-        self.salt = salt;
+    pub fn with_signature_type(mut self, signature_type: SignatureType) -> Self {
+        self.signature_type = signature_type;
         self
     }
 }
@@ -165,7 +165,7 @@ impl OrderIntent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
     pub r: U256,
     pub s: U256,
@@ -205,8 +205,8 @@ mod tests {
     #[test]
     fn test_signature_type_as_u8() {
         assert_eq!(SignatureType::Eoa.as_u8(), 0);
-        assert_eq!(SignatureType::Poly.as_u8(), 1);
-        assert_eq!(SignatureType::PolyProxy.as_u8(), 2);
+        assert_eq!(SignatureType::PolyProxy.as_u8(), 1);
+        assert_eq!(SignatureType::PolyGnosisSafe.as_u8(), 2);
     }
 
     #[test]

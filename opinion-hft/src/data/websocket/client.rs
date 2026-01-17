@@ -41,12 +41,14 @@ enum WsCommand {
     Close,
 }
 
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
 impl WebSocketClient {
-    pub fn new(config: WebSocketConfig, api_key: String) -> Self {
+    pub fn new(config: &WebSocketConfig, api_key: String) -> Self {
         let (event_tx, _) = broadcast::channel(1024);
 
         Self {
-            config,
+            config: config.clone(),
             api_key,
             event_tx,
             command_tx: None,
@@ -59,9 +61,27 @@ impl WebSocketClient {
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        let url = format!("{}?apikey={}", self.config.url, self.api_key);
+        let base_url = self.config.url.trim_end_matches('/');
+        let url_str = format!("{}/?apikey={}", base_url, self.api_key);
+        
+        tracing::info!("Connecting to WebSocket: {}?apikey=REDACTED", base_url);
+        
+        // Build request with headers to avoid 400 Bad Request (WAF/API check)
+        let mut request = url_str.into_client_request()
+            .map_err(|e| Error::WebSocketConnectionError(format!("invalid URL: {}", e)))?;
+            
+        let headers = request.headers_mut();
+        headers.insert(
+            "User-Agent", 
+            "opinion-hft/1.0".parse().unwrap()
+        );
+        // Some APIs require Origin matching the host
+        headers.insert(
+            "Origin",
+            "https://opinion.trade".parse().unwrap()
+        );
 
-        let (ws_stream, _) = connect_async(&url)
+        let (ws_stream, _) = connect_async(request)
             .await
             .map_err(|e| Error::WebSocketConnectionError(e.to_string()))?;
 
@@ -146,14 +166,15 @@ impl WebSocketClient {
         Ok(())
     }
 
-    fn parse_message(text: &str) -> Option<WsEvent> {
+    pub fn parse_message(text: &str) -> Option<WsEvent> {
         #[derive(Deserialize)]
         struct GenericMessage {
             channel: Option<String>,
             data: Option<serde_json::Value>,
         }
 
-        let msg: GenericMessage = serde_json::from_str(text).ok()?;
+        let mut buffer = text.as_bytes().to_vec();
+        let msg: GenericMessage = simd_json::from_slice(&mut buffer).ok()?;
 
         match msg.channel.as_deref() {
             Some("trade.order.update") => {
@@ -222,14 +243,14 @@ mod tests {
     #[test]
     fn test_websocket_client_creation() {
         let config = mock_config();
-        let client = WebSocketClient::new(config, "test-key".into());
+        let client = WebSocketClient::new(&config, "test-key".into());
         assert!(client.command_tx.is_none());
     }
 
     #[test]
     fn test_event_subscription() {
         let config = mock_config();
-        let client = WebSocketClient::new(config, "test-key".into());
+        let client = WebSocketClient::new(&config, "test-key".into());
         let _rx = client.subscribe_events();
     }
 

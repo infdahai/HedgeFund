@@ -14,7 +14,7 @@ futures = "0.3"
 # Ethereum / EIP-712
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
-alloy = { version = "0.3", features = ["providers", "signers", "contract"] }
+alloy = { version = "0.3", features = ["providers", "signers", "contract", "signer-local"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 
 # Rate Limiting
@@ -22,7 +22,9 @@ governor = "0.6"
 nonzero_ext = "0.3"
 
 # Networking
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"] }
+reqwest = { version = "0.12", features = ["json"] }
+rquest = { version = "5.1", features = ["json"] }
+rquest-util = { version = "2.2", features = ["emulation"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2.5"
 
@@ -46,6 +48,13 @@ anyhow = "1.0"
 hex = "0.4"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+
+# Environment configuration
+dotenvy = "0.15"
+tracing-appender = "0.2.4"
+simd-json = "0.14.3"
+secrecy = "0.10.3"
+zeroize = "1.8.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

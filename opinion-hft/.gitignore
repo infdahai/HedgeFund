@@ -1,0 +1,26 @@
+# Build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment and secrets - CRITICAL: Never commit these!
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# Test outputs
+*.log
+coverage/

@@ -5,6 +5,7 @@ sol! {
     interface IConditionalTokens {
         function balanceOf(address account, uint256 id) external view returns (uint256);
         function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids) external view returns (uint256[] memory);
+        function mergePositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata partition, uint256 amount) external;
     }
 }
 

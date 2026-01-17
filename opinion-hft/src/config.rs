@@ -4,8 +4,10 @@
 //! the Opinion Trade API specifications.
 
 use std::time::Duration;
+use std::str::FromStr;
 
 use crate::error::{Error, Result};
+use crate::auth::secret::{SecretLoader, PrivateKey, SecretString};
 
 // ============ Critical Constants (DO NOT MODIFY) ============
 
@@ -61,6 +63,51 @@ pub struct Config {
 
     /// Confirmation tracking configuration
     pub confirmation: ConfirmationConfig,
+
+    /// Risk management configuration
+    pub risk: RiskConfig,
+
+    /// Execution environment (local/aws)
+    pub environment: Environment,
+}
+
+/// Risk management configuration.
+#[derive(Debug, Clone)]
+pub struct RiskConfig {
+    /// Maximum allowed API latency before warning/stopping
+    pub max_api_latency: Duration,
+    /// Maximum allowed clock drift between local and server
+    pub max_clock_drift: Duration,
+    /// Number of consecutive errors to trigger circuit breaker
+    pub max_consecutive_errors: u32,
+    /// Maximum daily loss before halting (in USDT)
+    pub max_daily_loss: f64,
+    /// Maximum drawdown percentage before halting (0.0 - 1.0)
+    pub max_drawdown_pct: f64,
+    /// Maximum slippage tolerance for arbitrage trades (0.0 - 1.0)
+    pub max_slippage_pct: f64,
+    /// Maximum execution time for atomic arbitrage (ms)
+    pub max_execution_time_ms: u64,
+    /// Maximum position per market (in USDT)
+    pub max_position_per_market: f64,
+    /// Maximum total exposure (in USDT)
+    pub max_total_exposure: f64,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            max_api_latency: Duration::from_millis(1200), // Increased from 500ms for hybrid client
+            max_clock_drift: Duration::from_secs(2),
+            max_consecutive_errors: 5,
+            max_daily_loss: 100.0,
+            max_drawdown_pct: 0.10,
+            max_slippage_pct: 0.005,
+            max_execution_time_ms: 500,
+            max_position_per_market: 500.0,
+            max_total_exposure: 2000.0,
+        }
+    }
 }
 
 /// API-related configuration.
@@ -91,8 +138,11 @@ pub struct ChainConfig {
     /// Chain ID (should be 56 for BNB Chain)
     pub chain_id: u64,
 
-    /// Private key for signing (hex encoded, without 0x prefix)
-    pub private_key: String,
+    /// Private key for signing (wrapped in Secret for security)
+    pub private_key: PrivateKey,
+
+    /// EOA address for position tracking
+    pub eoa_address: String,
 
     /// ConditionalTokens contract address
     pub conditional_tokens_address: String,
@@ -175,6 +225,32 @@ pub enum ConfirmationMode {
     Hybrid,
 }
 
+/// Execution environment for the bot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Environment {
+    #[default]
+    Local,
+    Aws,
+}
+
+impl std::str::FromStr for Environment {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "local" => Ok(Self::Local),
+            "aws" => Ok(Self::Aws),
+            _ => Err(format!("invalid environment: {}", s)),
+        }
+    }
+}
+
+impl Environment {
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
 // ============ Default Implementations ============
 
 impl Default for ApiConfig {
@@ -194,7 +270,8 @@ impl Default for ChainConfig {
         Self {
             rpc_url: String::new(),
             chain_id: CHAIN_ID,
-            private_key: String::new(),
+            private_key: PrivateKey::default(),
+            eoa_address: String::new(),
             conditional_tokens_address: CONDITIONAL_TOKENS_ADDRESS.to_string(),
             rpc_timeout: Duration::from_secs(5),
         }
@@ -266,7 +343,7 @@ impl Config {
             });
         }
 
-        if self.chain.private_key.is_empty() {
+        if self.chain.private_key.expose_secret().is_empty() {
             return Err(Error::MissingConfig {
                 field: "chain.private_key".into(),
             });
@@ -286,6 +363,63 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Load configuration from environment variables.
+    /// Reads from .env file if present, then from environment.
+    pub fn from_env() -> Result<Config> {
+        let _ = dotenvy::dotenv();
+
+        let api_key = std::env::var("OPINION_API_KEY").map_err(|_| Error::MissingConfig {
+            field: "OPINION_API_KEY".into(),
+        })?;
+
+        let rpc_url = std::env::var("BSC_RPC_URL")
+            .unwrap_or_else(|_| "https://bsc-dataseed.binance.org".to_string());
+
+        // Use SecretLoader to securely load private key
+        let private_key = SecretLoader::load_private_key().unwrap_or_else(|_| PrivateKey::default());
+
+        let eoa_address = std::env::var("OPINION_EOA_ADDRESS").unwrap_or_default();
+
+        let ws_url = std::env::var("OPINION_WS_URL")
+            .unwrap_or_else(|_| WEBSOCKET_URL.to_string())
+            .trim_end_matches('/')
+            .to_string();
+
+        let rest_url =
+            std::env::var("OPINION_REST_URL").unwrap_or_else(|_| REST_API_BASE_URL.to_string());
+
+        let environment = std::env::var("OPINION_ENV")
+            .ok()
+            .and_then(|e| Environment::from_str(&e).ok())
+            .unwrap_or_default();
+
+        let mut builder = Config::builder()
+            .api_key(api_key)
+            .rpc_url(rpc_url)
+            .websocket_url(ws_url)
+            .rest_base_url(rest_url)
+            .environment(environment);
+
+        if !private_key.expose_secret().is_empty() {
+             // We can't use the builder method directly because it takes String
+             // and we already have a Secret. We'll set it directly on the builder's config object
+             // effectively bypassing the "String" requirement of the builder method for this specific case,
+             // or we'd have to expose it which defeats the purpose.
+             // Actually, ConfigBuilder::private_key takes String and wraps it.
+             // But we already have a Secret. 
+             // Best way: Just assign it directly if we modify builder to allow raw access or expose a secret setter.
+             // For simplicity in this diff, we expose it momentarily to pass to builder which re-wraps it.
+             // Ideally we add a `private_key_secret` method to builder.
+             builder.config.chain.private_key = private_key;
+        }
+
+        if !eoa_address.is_empty() {
+            builder = builder.eoa_address(eoa_address);
+        }
+
+        builder.build()
     }
 }
 
@@ -309,9 +443,11 @@ impl ConfigBuilder {
     }
 
     /// Set the private key (hex encoded, with or without 0x prefix).
+    /// Automatically wraps in Secret for security.
     pub fn private_key(mut self, key: impl Into<String>) -> Self {
         let key = key.into();
-        self.config.chain.private_key = key.strip_prefix("0x").unwrap_or(&key).to_string();
+        let cleaned = key.strip_prefix("0x").unwrap_or(&key).to_string();
+        self.config.chain.private_key = SecretString::new(cleaned);
         self
     }
 
@@ -355,6 +491,16 @@ impl ConfigBuilder {
     pub fn build_unchecked(self) -> Config {
         self.config
     }
+
+    pub fn eoa_address(mut self, address: impl Into<String>) -> Self {
+        self.config.chain.eoa_address = address.into();
+        self
+    }
+
+    pub fn environment(mut self, env: Environment) -> Self {
+        self.config.environment = env;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -382,8 +528,9 @@ mod tests {
         assert_eq!(config.api.api_key, "test-key");
         assert_eq!(config.chain.rpc_url, "https://bsc-rpc.example.com");
         assert_eq!(config.confirmation.mode, ConfirmationMode::OnChainOnly);
-        // Private key should have 0x stripped
-        assert!(!config.chain.private_key.starts_with("0x"));
+        // Private key should have 0x stripped and be redacted
+        assert_eq!(config.chain.private_key.expose_secret().len(), 64);
+        assert!(!config.chain.private_key.expose_secret().starts_with("0x"));
     }
 
     #[test]

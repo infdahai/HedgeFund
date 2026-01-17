@@ -2,6 +2,138 @@
 📋 Opinion Trade HFT Framework - Complete Context Document
 > Purpose: This document captures ALL context, research findings, design decisions, and implementation details from our planning session. Use this to resume work in a new session.
 ---
+
+# Architecture Overview
+
+## System Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                           OPINION TRADE HFT FRAMEWORK                             │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                              DATA PLANE                                      │ │
+│  │                                                                              │ │
+│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
+│  │   │  WebSocket      │   │   REST Client   │   │    Chain Client         │   │ │
+│  │   │  Client         │   │                 │   │    (Alloy)              │   │ │
+│  │   │                 │   │                 │   │                         │   │ │
+│  │   │ ┌─────────────┐ │   │  /markets       │   │  balanceOf()            │   │ │
+│  │   │ │ market.data │ │   │  /orderbook     │   │  balanceOfBatch()       │   │ │
+│  │   │ │ order.update│ │   │  /orders        │   │                         │   │ │
+│  │   │ │ trade.record│ │   │                 │   │  ConditionalTokens      │   │ │
+│  │   │ └─────────────┘ │   │  ?apikey=XXX    │   │  (ERC-1155)             │   │ │
+│  │   └────────┬────────┘   └────────┬────────┘   └────────────┬────────────┘   │ │
+│  │            │                     │                         │                 │ │
+│  │            └─────────────────────┼─────────────────────────┘                 │ │
+│  │                                  ▼                                           │ │
+│  │                    ┌─────────────────────────────┐                           │ │
+│  │                    │        Event Bus            │                           │ │
+│  │                    │   (tokio::broadcast)        │                           │ │
+│  │                    └─────────────┬───────────────┘                           │ │
+│  └──────────────────────────────────┼───────────────────────────────────────────┘ │
+│                                     │                                             │
+│                                     ▼                                             │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                           EXECUTION PLANE                                    │ │
+│  │                                                                              │ │
+│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
+│  │   │   EIP-712       │   │  Priority Queue │   │    Rate Limiter         │   │ │
+│  │   │   Signer        │   │                 │   │    (Governor GCRA)      │   │ │
+│  │   │                 │   │  Critical  ━━━▶ │   │                         │   │ │
+│  │   │  Precomputed:   │   │  High      ━━━▶ │   │  15 TPS                 │   │ │
+│  │   │  • Domain Sep   │   │  Medium    ━━━▶ │   │  Burst: 3               │   │ │
+│  │   │  • Type Hash    │   │  Low       ━━━▶ │   │  ~15ns/check            │   │ │
+│  │   │                 │   │                 │   │                         │   │ │
+│  │   │  k256 ECDSA     │   │  FIFO per level │   │  until_ready().await    │   │ │
+│  │   └─────────────────┘   └────────┬────────┘   └─────────────────────────┘   │ │
+│  │                                  │                                           │ │
+│  │                                  ▼                                           │ │
+│  │              ┌───────────────────────────────────────────────┐               │ │
+│  │              │           Confirmation Tracker                │               │ │
+│  │              │                                               │               │ │
+│  │              │  ┌─────────────────────────────────────────┐  │               │ │
+│  │              │  │  Mode: TrustWebSocket | OnChainOnly |   │  │               │ │
+│  │              │  │        Hybrid (recommended)             │  │               │ │
+│  │              │  └─────────────────────────────────────────┘  │               │ │
+│  │              │                                               │               │ │
+│  │              │  1. Record position_before                    │               │ │
+│  │              │  2. Wait for WS status="Finish"               │               │ │
+│  │              │  3. Query on-chain balanceOf()                │               │ │
+│  │              │  4. Calculate: position_after - position_before│               │ │
+│  │              │  5. Emit ConfirmationEvent                    │               │ │
+│  │              └───────────────────────────────────────────────┘               │ │
+│  └──────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                   │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Module Interactions
+
+```
+┌─────────────┐     OrderIntent      ┌─────────────────┐
+│   Strategy  │ ──────────────────▶  │  Priority Queue │
+│   (User)    │                      │                 │
+└─────────────┘                      └────────┬────────┘
+                                              │
+                                              ▼
+┌─────────────┐                      ┌─────────────────┐
+│  EIP-712    │ ◀─── sign_order ──── │  Order Gateway  │
+│  Signer     │                      │  (orchestrator) │
+└─────────────┘                      └────────┬────────┘
+                                              │
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+     ┌─────────────────┐            ┌─────────────────┐            ┌─────────────────┐
+     │  Rate Limiter   │            │   REST Client   │            │ Confirmation    │
+     │  (wait permit)  │ ─────────▶ │   POST /orders  │ ─────────▶ │ Tracker         │
+     └─────────────────┘            └─────────────────┘            └────────┬────────┘
+                                                                            │
+                                    ┌───────────────────────────────────────┘
+                                    ▼
+                           ┌─────────────────┐            ┌─────────────────┐
+                           │  WebSocket      │ ─────────▶ │  Chain Client   │
+                           │  (status=Finish)│  trigger   │  balanceOf()    │
+                           └─────────────────┘            └─────────────────┘
+```
+
+## Data Flow Summary
+
+| Step | Component | Action | Latency |
+|------|-----------|--------|---------|
+| 1 | Strategy | Generate OrderIntent | User code |
+| 2 | Priority Queue | Enqueue with priority | <0.1ms |
+| 3 | Rate Limiter | Wait for permit | 0-66ms |
+| 4 | EIP-712 Signer | Sign order | <0.3ms |
+| 5 | REST Client | POST /orders | 30-80ms |
+| 6 | WebSocket | Wait for status=Finish | 3-5s |
+| 7 | Chain Client | Query balanceOf() | 50-100ms |
+| 8 | Confirmation | Calculate actual fill | <0.1ms |
+
+**Total: 3.1-5.5 seconds** (dominated by chain confirmation)
+
+## Module Decoupling Principles
+
+1. **Data Plane modules have NO dependencies on Execution Plane**
+   - WebSocket, REST, Chain clients are pure I/O
+   - They emit events, don't process business logic
+
+2. **Execution Plane modules communicate via events and channels**
+   - `broadcast::Sender<WsEvent>` for WebSocket events
+   - `mpsc::Sender<ConfirmationEvent>` for confirmations
+   - No direct struct references between modules
+
+3. **Configuration is injected, not hardcoded**
+   - All modules receive `&Config` or specific config structs
+   - Environment variables loaded via `dotenvy`
+
+4. **Each module is independently testable**
+   - Mock configs for unit tests
+   - Integration tests with `#[ignore]` for live API
+
+---
+
 Table of Contents
 1. Project Overview (#1-project-overview)
 2. Research Findings (#2-research-findings)
@@ -30,7 +162,7 @@ Build a high-frequency trading (HFT) framework for the Opinion Trade prediction 
 | Ethereum Library | Alloy | 10x faster than ethers-rs, actively maintained |
 | EIP-712 Signing | alloy-sol-types + k256 | Pure Rust, no FFI overhead |
 | Rate Limiting | Governor | GCRA algorithm, 15ns per check, single AtomicU64 |
-| HTTP Client | reqwest (HTTP/2) | Connection pooling, TLS |
+| HTTP Client | curl subprocess | Bypasses JA3 TLS fingerprinting on all endpoints |
 | WebSocket | tokio-tungstenite | Native async WebSocket |
 | Concurrent Map | DashMap | Lock-free concurrent HashMap |
 1.3 User Requirements
@@ -415,22 +547,49 @@ Endpoints:
 Authentication:
 ⚠️ API key in QUERY PARAMETER, not header!
 URL: https://proxy.opinion.trade:8443/openapi/orders?apikey={KEY}
+
+TLS Fingerprinting (CRITICAL):
+Kong API Gateway uses JA3 TLS fingerprinting, blocking standard HTTP clients (reqwest, hyper, etc.) for ALL endpoints.
+
+**Solution**: Use `curl` subprocess for ALL API endpoints (GET, POST, DELETE)
+- Implementation: All methods in `unified_client.rs` use `std::process::Command` to spawn curl
+- Performance: ~10-50ms overhead per request (acceptable for market data)
+- Why curl works: System has TUN proxy (utun4: 28.0.0.1) that automatically routes curl traffic through VPN
+
+**Note**: Previous attempts with `rquest` crate failed. curl subprocess is the only reliable solution.
+
 Test Requirements:
 - [ ] GET requests work
 - [ ] POST with JSON body works
 - [ ] API key in query params
 - [ ] Timeout handling
 - [ ] Retry on 5xx
+- [ ] TLS fingerprinting bypass works for protected endpoints
 ---
 5.6 Chain Client (src/chain/)
 Contract: ConditionalTokens (ERC-1155)
 Methods:
 function balanceOf(address account, uint256 id) → uint256
 function balanceOfBatch(address[] accounts, uint256[] ids) → uint256[]
+
+RPC Retry Mechanism:
+Automatic retry with exponential backoff for unreliable RPC endpoints:
+- Max attempts: 3
+- Backoff strategy: Exponential (1s, 2s, 4s)
+- Retriable errors: timeout, connection errors, HTTP 503, HTTP 429
+- Applied methods: `balance_of()`, `balance_of_batch()`
+
+Benefits:
+- Improved reliability on public RPC endpoints
+- Handles transient network issues gracefully
+- No manual retry logic needed in strategy code
+
 Test Requirements:
 - [ ] Balance query works
 - [ ] Batch query works
 - [ ] Error handling for RPC failures
+- [ ] Retry mechanism triggers on transient errors
+- [ ] Non-retriable errors fail immediately
 ---
 5.7 Confirmation Tracker (src/execution/confirmation.rs)
 Flow:
