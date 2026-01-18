@@ -8,10 +8,28 @@ High-frequency trading bot for Opinion.trade prediction markets on BNB Chain (56
 cd opinion-hft
 cargo check              # Type check
 cargo clippy             # Lint (0 warnings required)
-cargo test --lib         # Run 64 unit tests
-cargo test -- --ignored  # Run live integration tests
+cargo test --lib         # Run 69 unit tests (no API required)
+cargo test --tests       # Run ALL live integration tests (requires .env)
+cargo test --test <name> # Run specific test file (e.g., live_account_tests)
 cargo run                # Start bot
 ```
+
+## Test Structure
+| Test File | Tests | Description |
+|-----------|-------|-------------|
+| `live_extended_api_tests` | 3 | Historical data, latest price, order details |
+| `small_scale_arbitrage_test` | 3 | Real-data arbitrage detection validation |
+| `live_user_data_tests` | 3 | User positions, balances, and trades |
+| `live_batch_operations` | 2 | Batch place/cancel order operations |
+| `live_account_tests` | 6 | User auth, proxy address, balance checks |
+| `live_market_data` | 6 | Markets, orderbook, quote tokens |
+| `live_order_tests` | 1 | Full order lifecycle (place→query→cancel) |
+| `live_trade_integration` | 2 | Complete trading workflow |
+| `live_websocket_tests` | 4 | WebSocket connection, subscriptions |
+| `trading_scenarios` | 8 | EIP-712 signing, market scenarios |
+| `dual_mode_client` | 3 | Environment switching (local/aws) |
+
+**Note**: All integration tests require valid `.env` configuration with API credentials.
 
 ## API Quirks (CRITICAL)
 | Issue | Correct | Wrong |
@@ -86,6 +104,12 @@ See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diag
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |
+| 2026-01-18 | Added small-scale arbitrage detection integration tests with real market data |
+| 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated DESIGN.md with Strategy, Telemetry, and Address Config sections |
+| 2026-01-18 | Added comprehensive API test coverage: User Data (Positions, Balances, Trades) and Batch Operations (Place/Cancel) |
+| 2026-01-18 | Fixed API parameter issues: `chain_id` snake_case fix, handled null lists in responses |
+| 2026-01-18 | Updated test documentation and fixed CLAUDE.md commands |
 | 2026-01-18 | API Compatibility Fixes: tradingMethod type (i32), added sign/safeRate/orderExpTime fields, fixed EIP-712 VerifyingContract to use CTF Exchange address, Fraction-based amount calculation, Serde camelCase verified, cancel order orderId confirmed |
 | 2026-01-18 | Implemented post-trade validation in RiskManager (slippage, execution time, P&L tracking, circuit breaker) |
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |

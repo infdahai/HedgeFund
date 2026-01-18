@@ -396,6 +396,92 @@ const ORDER_TYPEHASH: &str = "Order(uint256 salt,address maker,address signer,ad
 * ❌ **DO NOT** exceed 15 TPS - API will reject.
 * ❌ **DO NOT** trust WebSocket quantity data - Use on-chain query.
 
+### 3.7 Address Configuration
+
+Key addresses used throughout the system. Some are fetched dynamically at runtime.
+
+| Address | Source | Purpose |
+|---------|--------|---------|
+| **ConditionalTokens Contract** | Hardcoded in code | ERC-1155 contract for position tokens |
+| | `0xAD1a38cEc043e70E83a3eC30443dB285ED10D774` | Used for `balanceOf()` queries |
+| **CTF Exchange Contract** | Fetched from API | Contract that verifies EIP-712 signatures |
+| | Endpoint: `/quoteToken?chainId=56` | Used as `verifyingContract` in EIP-712 domain |
+| | Field: `ctfExchangeAddress` | **NOT** the same as ConditionalTokens! |
+| **Quote Token (USDT)** | Fetched from API | Base currency for trading |
+| | Address: `0x55d398326f99059fF775485246999027B3197955` | Stablecoin on BNB Chain |
+| **Proxy/Safe Address** | Fetched from API | Maker address for orders (Safe multi-sig) |
+| | Endpoint: `/user/auth` | Used as `maker` field in orders |
+| | Field: `walletUsers["56"]` | Required for order signing |
+| **EOA Address** | From environment | Signer address for EIP-712 |
+| | `OPINION_EOA_ADDRESS` | Used as `signer` field in orders |
+
+#### Address Fetching Flow
+
+```
+1. On startup:
+   ├─ Fetch quote tokens: GET /quoteToken?chainId=56
+   │  └─ Extract: CTF Exchange address, USDT address
+   │
+   ├─ Fetch user auth: GET /user/auth
+   │  └─ Extract: Proxy/Safe address for chain 56
+   │
+   └─ Cache addresses for runtime use
+
+2. During trading:
+   ├─ Use cached CTF Exchange for EIP-712 domain
+   ├─ Use cached Proxy/Safe as order maker
+   └─ Use EOA from environment as order signer
+```
+
+#### EIP-712 Domain Example
+
+```rust
+EIP712Domain {
+    name: "OPINION CTF Exchange",  // ⚠️ Note the space!
+    version: "1",
+    chainId: 56,
+    verifyingContract: <CTF Exchange address from /quoteToken>  // DYNAMIC!
+}
+```
+
+**CRITICAL:** Do NOT hardcode the CTF Exchange address. Always fetch it from `/quoteToken` endpoint at runtime, as it may change.
+
+#### Code Example
+
+```rust
+// Initialize client and fetch addresses
+let client = OpinionClient::new(&config.api, config.environment)?;
+client.init(config.chain.chain_id, &config.chain.quote_token).await?;
+
+// Get cached addresses
+let exchange_address = client.get_cached_exchange_address().await.unwrap();
+let proxy_address = client.get_cached_proxy_address().await.unwrap();
+
+println!("CTF Exchange: {}", exchange_address);
+println!("Proxy/Safe: {}", proxy_address);
+```
+
+#### Key Points
+
+1. **Dynamic Fetching**: CTF Exchange and Proxy addresses are fetched at startup, not hardcoded
+2. **Caching**: Addresses are cached in `OpinionClient` after first fetch
+3. **Separation**: ConditionalTokens (position tracking) ≠ CTF Exchange (order verification)
+4. **Two Addresses per Order**: 
+   - `maker`: Proxy/Safe address (from API)
+   - `signer`: EOA address (from environment)
+5. **Chain Specific**: Use `chainId=56` for BNB Chain when fetching
+
+#### Troubleshooting
+
+**Issue**: "Exchange address not found for quote token"
+- **Solution**: Verify quote token address matches one returned by `/quoteToken`
+
+**Issue**: "Wallet address mismatch"
+- **Solution**: Ensure `OPINION_EOA_ADDRESS` matches the EOA that created the Proxy account
+
+**Issue**: EIP-712 signature verification fails
+- **Solution**: Confirm `verifyingContract` is CTF Exchange address, NOT ConditionalTokens
+
 ---
 
 ## 4. Architecture Design
@@ -654,6 +740,365 @@ Kong API Gateway uses JA3 TLS fingerprinting.
 
 Orchestrates validation, snapshotting, signing, rate limiting, and submission. Handles 429/5xx retries.
 
+### 5.9 Strategy Module (`src/strategy/`)
+
+**Purpose:** Implement trading strategies for prediction markets.
+
+**Components:**
+
+#### 5.9.1 Arbitrage Detector (`arbitrage.rs`)
+
+Detects and evaluates arbitrage opportunities across different market types.
+
+**Supported Arbitrage Types:**
+
+| Type | Condition | Strategy | Profit Source |
+|------|-----------|----------|---------------|
+| **Yes/No** | `yes_ask + no_ask < 1.0` | Buy both tokens | Guaranteed payout when one wins |
+| **Neg Risk** | `sum(all_asks) < 1.0` | Buy all outcomes | Guaranteed payout (one must win) |
+| **Mint-Sell** | `yes_bid + no_bid > 1.0` | Mint @ $1.0, sell both | Immediate spread profit |
+| **Spread** | Wide bid-ask spread | Place orders inside spread | Capture spread + fees |
+
+**Key Structures:**
+
+```rust
+pub struct ArbitrageDetector {
+    config: ArbitrageConfig,
+    opportunity_counter: u64,
+}
+
+pub struct ArbitrageOpportunity {
+    pub id: String,
+    pub arb_type: ArbitrageType,
+    pub total_cost: f64,          // Cost to execute
+    pub net_profit_rate: f64,     // Profit % after fees
+    pub max_size: f64,           // Maximum executable size
+    pub legs: Vec<ArbitrageLeg>, // Individual orders
+    pub detected_at: u64,
+}
+
+pub struct ArbitrageLeg {
+    pub pair: String,           // Trading pair (e.g., "BTC-YES")
+    pub token_id: String,       // ERC-1155 token ID
+    pub side: TradeSide,        // Buy or Sell
+    pub price: f64,
+    pub size: f64,
+}
+```
+
+**Fee Calculation:**
+
+Opinion uses a symmetric fee curve:
+```
+Fee Rate = topic_rate * price * (1 - price)
+```
+
+- Peaks at p = 0.5 (maximum uncertainty)
+- Tapers to 0 at edges (p → 0 or p → 1)
+- Applies referral discount (default 10%)
+- $0.50 minimum fee per order
+
+**Detection Logic:**
+
+```rust
+// Yes/No Example
+yes_cost = yes_ask * size + yes_fee
+no_cost = no_ask * size + no_fee
+total_cost = yes_cost + no_cost
+
+if total_cost < 1.0 * size {
+    profit = (1.0 * size) - total_cost
+    // Check if profit > min_threshold
+}
+```
+
+#### 5.9.2 Market Scanner (`market_scanner.rs`)
+
+Continuously monitors markets for opportunities.
+
+**Functions:**
+- Fetch active markets from API
+- Track orderbook state for each market
+- Calculate spreads and liquidity metrics
+- Filter by volume, status, and liquidity
+
+**Key Structures:**
+
+```rust
+pub struct MarketInfo {
+    pub id: String,
+    pub question: String,
+    pub yes_token_id: String,
+    pub no_token_id: String,
+    pub volume_24h: f64,
+    pub is_active: bool,
+}
+
+pub struct MarketOrderbook {
+    pub pair: String,
+    pub bids: Vec<OrderbookSide>,
+    pub asks: Vec<OrderbookSide>,
+}
+
+impl MarketOrderbook {
+    pub fn best_bid(&self) -> Option<f64> { /* ... */ }
+    pub fn best_ask(&self) -> Option<f64> { /* ... */ }
+    pub fn spread(&self) -> Option<f64> { /* ... */ }
+    pub fn mid_price(&self) -> Option<f64> { /* ... */ }
+}
+```
+
+#### 5.9.3 Scoreboard (`scoreboard.rs`)
+
+Tracks strategy performance metrics.
+
+**Metrics:**
+- Total P&L
+- Win rate
+- Average profit per trade
+- Execution time statistics
+- Slippage tracking
+
+#### 5.9.4 Market Rotator (`rotator.rs`)
+
+Manages market selection and rotation.
+
+**Features:**
+- Prioritize markets by volume
+- Rotate to new markets when conditions change
+- Avoid over-concentrated positions
+- Track market-specific performance
+
+**Configuration:**
+
+```rust
+pub struct RotationConfig {
+    pub max_markets: usize,           // Max markets to track
+    pub min_volume: f64,              // Minimum 24h volume
+    pub rotation_interval: Duration,   // How often to rotate
+    pub performance_window: Duration,  // Lookback for performance
+}
+```
+
+**Configuration Example:**
+
+```rust
+let config = ArbitrageConfig {
+    min_profit_rate: 0.005,    // 0.5% minimum profit
+    min_liquidity: 100.0,      // 100 units minimum
+    topic_fee_rate: 0.02,      // 2% max fee
+    referral_discount: 0.10,    // 10% rebate
+    max_slippage: 0.01,        // 1% max slippage
+};
+
+let detector = ArbitrageDetector::new(config);
+```
+
+**Testing:**
+
+See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
+
+### 5.10 Telemetry Module (`src/telemetry.rs`)
+
+**Purpose:** Provides observability metrics for monitoring bot performance and health.
+
+**Components:**
+
+#### 5.10.1 Logging (tracing)
+
+Structured logging for all system events.
+
+**Log Levels:**
+- `ERROR`: System failures, critical errors
+- `WARN`: Risk limit violations, connection issues
+- `INFO`: Order submissions, confirmations, market events
+- `DEBUG`: Detailed API responses, internal state changes
+- `TRACE`: Very fine-grained execution details
+
+**Log Format:**
+
+```json
+{
+  "timestamp": "2026-01-18T10:30:45.123Z",
+  "level": "INFO",
+  "target": "opinion_hft::execution::gateway",
+  "message": "Order submitted successfully",
+  "fields": {
+    "order_id": "ord_abc123",
+    "market_id": 12345,
+    "side": "Buy",
+    "price": "0.450",
+    "size": "100.0"
+  }
+}
+```
+
+**Key Events Logged:**
+- Order lifecycle events (submit → fill → confirm)
+- WebSocket connection state changes
+- API rate limit warnings
+- Risk manager alerts
+- Arbitrage opportunity detection
+
+#### 5.10.2 Metrics (planned)
+
+Performance metrics for monitoring and alerting.
+
+**Metric Categories:**
+
+| Category | Metrics |
+|----------|---------|
+| **Trading** | Orders submitted, filled, cancelled; P&L; Win rate; Avg execution time |
+| **API** | Request latency; Success rate; Rate limit hits; Error rate |
+| **WebSocket** | Connection uptime; Messages received; Latency |
+| **Strategy** | Opportunities detected; Opportunities executed; Avg profit per arb |
+| **Risk** | Drawdown; Daily P&L; Circuit breaker triggers; Position exposure |
+
+**Key Metrics (Examples):**
+
+```
+# Trading Metrics
+opinion_hft_orders_total{status="submitted"} 1523
+opinion_hft_orders_total{status="filled"} 1498
+opinion_hft_pnl_total 45.23
+opinion_hft_win_rate 0.847
+opinion_hft_execution_time_ms 3200
+
+# API Metrics
+opinion_hft_api_latency_ms 45
+opinion_hft_api_success_rate 0.999
+opinion_hft_rate_limit_hits 12
+
+# Strategy Metrics
+opinion_hft_arbitrage_detected 234
+opinion_hft_arbitrage_executed 189
+opinion_hft_avg_arb_profit 0.0056
+
+# Risk Metrics
+opinion_hft_drawdown 0.023
+opinion_hft_daily_pnl -2.34
+opinion_hft_circuit_breaker_triggered 0
+```
+
+**Planned Integration:**
+- Prometheus metrics endpoint (`/metrics`)
+- Grafana dashboard templates
+- Alert rules for critical thresholds
+
+#### 5.10.3 Tracing (planned)
+
+Distributed tracing for request lifecycle analysis.
+
+**Trace Spans:**
+- `order_execution`: From strategy signal to confirmation
+- `api_request`: Individual REST API calls
+- `websocket_message`: Message processing
+- `chain_query`: On-chain balance queries
+
+**Example Trace:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ order_execution                                           │
+│  ├─ strategy_signal_detection (0.5ms)                    │
+│  ├─ order_validation (0.2ms)                              │
+│  ├─ rate_limit_acquire (5ms)                              │
+│  ├─ eip712_signing (0.3ms)                               │
+│  ├─ api_post_order (45ms)                                 │
+│  ├─ websocket_wait_finish (3200ms)                       │
+│  └─ chain_query_balance (100ms)                           │
+└─────────────────────────────────────────────────────────────┘
+Total: 3351ms
+```
+
+**Planned Integration:**
+- OpenTelemetry for tracing
+- Jaeger/Tempo UI for visualization
+- Correlation with metrics
+
+#### 5.10.4 Health Checks
+
+Endpoint for system health monitoring.
+
+**Health Check Endpoint:**
+
+```rust
+pub async fn health_check() -> Result<HealthStatus> {
+    Ok(HealthStatus {
+        status: "healthy",
+        uptime: calculate_uptime(),
+        api_latency: check_api_latency().await?,
+        websocket_connected: ws_connected(),
+        chain_sync: check_chain_sync().await?,
+        circuit_breaker_active: is_circuit_breaker_active(),
+    })
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "healthy",
+  "uptime": 86400,
+  "checks": {
+    "api": {
+      "latency_ms": 45,
+      "success_rate": 0.999
+    },
+    "websocket": {
+      "connected": true,
+      "last_message_age_ms": 100
+    },
+    "chain": {
+      "synced": true,
+      "latest_block": 45123456
+    },
+    "risk": {
+      "circuit_breaker_active": false,
+      "daily_pnl": 12.34,
+      "drawdown_pct": 0.015
+    }
+  }
+}
+```
+
+**Usage:**
+
+```bash
+curl http://localhost:8080/health
+```
+
+#### Configuration
+
+Environment variables for telemetry:
+
+```bash
+# Logging
+RUST_LOG=info,opinion_hft=debug
+
+# Metrics (when implemented)
+OPINION_METRICS_ENABLED=true
+OPINION_METRICS_PORT=9090
+
+# Tracing (when implemented)
+OPINION_TRACING_ENABLED=true
+OPINION_TRACING_ENDPOINT=http://jaeger:14268/api/traces
+```
+
+**Implementation Status:**
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Logging (tracing) | ✅ Implemented | Structured logging across all modules |
+| Metrics | ⏳ Planned | Prometheus integration |
+| Tracing | ⏳ Planned | OpenTelemetry spans |
+| Health Check | ⏳ Planned | HTTP endpoint |
+
+**See Also:**
+- `src/telemetry.rs` for implementation details
+- `CLAUDE.md` for logging guidelines
+
 ---
 
 ## 6. API Compatibility Design
@@ -895,51 +1340,80 @@ impl ConfirmationTracker {
 opinion-hft/
 ├── Cargo.toml
 ├── README.md
+├── CLAUDE.md
+├── .env.example
 ├── docs/
-│   └── DESIGN.md
+│   ├── DESIGN.md              # Architecture and design decisions
+│   └── QUICKSTART.md         # Quick start guide for new users
 ├── src/
-│   ├── lib.rs
-│   ├── config.rs
-│   ├── error.rs
-│   ├── auth/
+│   ├── lib.rs                # Library root
+│   ├── main.rs               # Bot entry point
+│   ├── config.rs             # Configuration from env
+│   ├── error.rs              # Error types
+│   ├── telemetry.rs          # Observability (metrics, tracing)
+│   ├── auth/                 # EIP-712 signing
 │   │   ├── mod.rs
-│   │   ├── eip712.rs
-│   │   ├── signer.rs
-│   │   └── tests.rs
-│   ├── data/
+│   │   ├── eip712.rs         # Typed data structures
+│   │   ├── signer.rs         # ECDSA signature implementation
+│   │   └── secret.rs         # Private key management
+│   ├── data/                 # Data plane (I/O only)
 │   │   ├── mod.rs
-│   │   ├── websocket/
+│   │   ├── event_bus.rs      # Broadcast channel for events
+│   │   ├── rest/             # REST API client
 │   │   │   ├── mod.rs
-│   │   │   ├── client.rs
-│   │   │   ├── messages.rs
-│   │   │   └── channels.rs
-│   │   ├── rest/
-│   │   │   ├── mod.rs
-│   │   │   ├── client.rs
-│   │   │   ├── endpoints.rs
-│   │   │   └── models.rs
-│   │   └── event_bus.rs
-│   ├── execution/
+│   │   │   ├── unified_client.rs    # Main client with caching
+│   │   │   └── models.rs           # API response models
+│   │   └── websocket/        # WebSocket client
+│   │       ├── mod.rs
+│   │       ├── client.rs
+│   │       ├── messages.rs   # Message parsing
+│   │       └── channels.rs   # Channel subscriptions
+│   ├── execution/            # Execution plane
 │   │   ├── mod.rs
-│   │   ├── rate_limiter.rs
-│   │   ├── priority_queue.rs
-│   │   ├── gateway.rs
-│   │   └── confirmation.rs
-│   ├── chain/
+│   │   ├── gateway.rs        # Order orchestration
+│   │   ├── rate_limiter.rs   # 15 TPS limit enforcement
+│   │   ├── priority_queue.rs # Priority-based order queue
+│   │   ├── confirmation.rs   # Trade confirmation tracking
+│   │   └── risk_manager.rs   # Risk controls & circuit breaker
+│   ├── strategy/             # Control plane strategies
 │   │   ├── mod.rs
-│   │   ├── client.rs
-│   │   └── conditional_tokens.rs
-│   └── types/
+│   │   ├── arbitrage.rs      # Arbitrage detection (Yes/No, NegRisk, Mint-Sell)
+│   │   ├── market_scanner.rs # Market discovery & orderbook tracking
+│   │   ├── scoreboard.rs     # Performance metrics
+│   │   └── rotator.rs       # Market rotation logic
+│   ├── chain/                # Blockchain interactions
+│   │   ├── mod.rs
+│   │   ├── client.rs         # RPC client with retry logic
+│   │   └── conditional_tokens.rs  # ERC-1155 contract calls
+│   └── types/                # Shared types
 │       ├── mod.rs
-│       ├── order.rs
-│       ├── market.rs
-│       └── position.rs
-├── tests/
-│   ├── integration/
-│   └── common/
-└── examples/
-
+│       ├── order.rs          # Order structures
+│       ├── market.rs         # Market information
+│       └── position.rs      # Position tracking
+├── tests/                   # Integration tests
+│   ├── live_account_tests.rs        # Auth, balance, proxy address
+│   ├── live_market_data.rs          # Markets, orderbook, quote tokens
+│   ├── live_order_tests.rs          # Order lifecycle
+│   ├── live_trade_integration.rs    # Complete trading workflow
+│   ├── live_websocket_tests.rs       # WebSocket connection & subscriptions
+│   ├── live_user_data_tests.rs       # Positions, balances, trades
+│   ├── live_batch_operations.rs      # Batch place/cancel orders
+│   ├── trading_scenarios.rs          # EIP-712 signing scenarios
+│   ├── dual_mode_client.rs           # Local/AWS environment switching
+│   ├── live_extended_api_tests.rs    # Price history, order by ID, etc.
+│   └── small_scale_arbitrage_test.rs # Arbitrage detection tests
+└── examples/                # Usage examples (optional)
+    ├── basic_arbitrage.rs
+    └── custom_strategy.rs
 ```
+
+**Key Design Decisions:**
+1. **Three-Plane Architecture**: Data → Control → Execution
+2. **Event-Driven**: `tokio::broadcast` for loose coupling
+3. **Rate-Limited**: 15 TPS with GCRA algorithm
+4. **Hybrid Confirmation**: WebSocket trigger + on-chain query
+5. **Environment-Aware**: Local (proxy) vs AWS (direct) TLS handling
+
 
 ---
 

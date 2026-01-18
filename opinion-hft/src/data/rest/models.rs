@@ -207,3 +207,104 @@ pub struct UserAuthInfo {
     #[serde(rename = "walletUsers")]
     pub wallet_users: std::collections::HashMap<String, String>,
 }
+
+// --- User Data Models ---
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPosition {
+    pub market_id: i64,
+    pub token_id: String,
+    pub quantity: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub side: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionListResult {
+    pub list: Vec<UserPosition>,
+    #[serde(default)]
+    pub total: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserBalance {
+    pub chain_id: String,
+    #[serde(default)]
+    pub total_balance: Option<String>,
+    #[serde(default)]
+    pub available_balance: Option<String>,
+    #[serde(default)]
+    pub locked_balance: Option<String>,
+    #[serde(default)]
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserTrade {
+    #[serde(default)]
+    pub trade_id: Option<String>,
+    pub order_id: String,
+    pub market_id: i64,
+    pub token_id: String,
+    pub price: String,
+    pub amount: String,
+    pub side: String,
+    #[serde(default)]
+    pub fee: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TradeListResult {
+    #[serde(default)]
+    pub list: Option<Vec<UserTrade>>,
+    #[serde(default)]
+    pub total: Option<u32>,
+}
+
+// --- Batch Operation Models ---
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct BatchOrderResult {
+    pub index: usize,
+    pub success: bool,
+    pub order_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CancelAllResult {
+    pub total_orders: usize,
+    pub cancelled: usize,
+    pub failed: usize,
+}
+
+// --- Price History ---
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PriceHistoryEntry {
+    #[serde(rename = "p")]
+    pub price: String,
+    #[serde(rename = "t")]
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PriceHistoryResult {
+    pub history: Vec<PriceHistoryEntry>,
+}
+
+// --- Order Detail ---
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderDataWrapper {
+    pub order_data: UserOrder,
+}

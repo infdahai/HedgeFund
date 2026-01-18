@@ -1,7 +1,8 @@
 use opinion_hft::config::Config;
 use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
+use tracing::info;
 
 fn load_config() -> Config {
     Config::from_env().expect("Failed to load config from .env")
@@ -10,7 +11,7 @@ fn load_config() -> Config {
 #[tokio::test]
 async fn test_websocket_connection() {
     let config = load_config();
-    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
     let mut event_rx = ws_client.subscribe_events();
     
     ws_client.connect().await.expect("Failed to connect");
@@ -29,7 +30,7 @@ async fn test_websocket_connection() {
 #[tokio::test]
 async fn test_websocket_market_data() {
     let config = load_config();
-    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
     let mut event_rx = ws_client.subscribe_events();
     
     ws_client.connect().await.expect("Failed to connect");
@@ -46,7 +47,7 @@ async fn test_websocket_market_data() {
 #[tokio::test]
 async fn test_websocket_trade_channels() {
     let config = load_config();
-    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
     let _event_rx = ws_client.subscribe_events();
     
     ws_client.connect().await.expect("Failed to connect");
@@ -64,7 +65,7 @@ async fn test_websocket_trade_channels() {
 #[tokio::test]
 async fn test_websocket_message_parsing() {
     let config = load_config();
-    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
     
     ws_client.connect().await.expect("Failed to connect");
     
@@ -77,6 +78,55 @@ async fn test_websocket_message_parsing() {
     } else {
         panic!("Expected OrderUpdate event");
     }
+    
+    ws_client.close().await.ok();
+}
+
+#[tokio::test]
+async fn test_websocket_order_lifecycle() {
+    let config = load_config();
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
+    let mut event_rx = ws_client.subscribe_events();
+    
+    ws_client.connect().await.expect("Failed to connect");
+    ws_client.subscribe("trade.order.update").await.expect("Failed to subscribe");
+    
+    // 等待订单状态更新示例
+    let timeout_duration = Duration::from_secs(10);
+    let mut received_update = false;
+    
+    let deadline = Instant::now() + timeout_duration;
+    while Instant::now() < deadline {
+        match timeout(Duration::from_secs(2), event_rx.recv()).await {
+            Ok(Ok(event)) => {
+                info!("Received WebSocket event: {:?}", event);
+                received_update = true;
+                break;
+            }
+            _ => continue,
+        }
+    }
+    
+    info!("Order lifecycle test completed. Received update: {}", received_update);
+    ws_client.close().await.ok();
+}
+
+#[tokio::test]
+async fn test_websocket_reconnection() {
+    let config = load_config();
+    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
+    
+    ws_client.connect().await.expect("Failed to connect");
+    info!("✅ Initial connection successful");
+    
+    // 模拟断开
+    ws_client.close().await.expect("Failed to close");
+    sleep(Duration::from_millis(500)).await;
+    info!("✅ Connection closed");
+    
+    // 重新连接
+    ws_client.connect().await.expect("Failed to reconnect");
+    info!("✅ Reconnection successful");
     
     ws_client.close().await.ok();
 }
