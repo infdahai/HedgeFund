@@ -31,12 +31,18 @@
 
     // 终端
     "terminal.integrated.env.osx": {
-        "RUST_LOG": "info"
+        "RUST_LOG": "info",
+        "OPINION_ENV": "local",
+        "OPINION_PROXY_URL": "http://127.0.0.1:7890"
     },
     "terminal.integrated.env.linux": {
-        "RUST_LOG": "info"
+        "RUST_LOG": "info",
+        "OPINION_ENV": "local",
+        "OPINION_PROXY_URL": "http://127.0.0.1:7890"
     },
     "terminal.integrated.env.windows": {
-        "RUST_LOG": "info"
+        "RUST_LOG": "info",
+        "OPINION_ENV": "local",
+        "OPINION_PROXY_URL": "http://127.0.0.1:7890"
     }
 }

@@ -9,7 +9,6 @@
 ## Installation
 
 ```bash
-cd opinion-hft
 cargo build --release
 ```
 
@@ -94,7 +93,6 @@ cargo run --release
 ## Project Structure
 
 ```
-opinion-hft/
 ├── src/
 │   ├── auth/           # EIP-712 signing
 │   ├── data/          # REST & WebSocket clients

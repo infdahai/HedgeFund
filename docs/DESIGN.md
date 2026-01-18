@@ -1436,7 +1436,6 @@ impl ConfirmationTracker {
 ## 8. Project Structure
 
 ```text
-opinion-hft/
 ├── Cargo.toml
 ├── README.md
 ├── CLAUDE.md
@@ -1448,62 +1447,6 @@ opinion-hft/
 │   ├── lib.rs                # Library root
 │   ├── main.rs               # Bot entry point
 │   ├── config.rs             # Configuration from env
-│   ├── error.rs              # Error types
-│   ├── telemetry.rs          # Observability (metrics, tracing)
-│   ├── auth/                 # EIP-712 signing
-│   │   ├── mod.rs
-│   │   ├── eip712.rs         # Typed data structures
-│   │   ├── signer.rs         # ECDSA signature implementation
-│   │   └── secret.rs         # Private key management
-│   ├── data/                 # Data plane (I/O only)
-│   │   ├── mod.rs
-│   │   ├── event_bus.rs      # Broadcast channel for events
-│   │   ├── rest/             # REST API client
-│   │   │   ├── mod.rs
-│   │   │   ├── unified_client.rs    # Main client with caching
-│   │   │   └── models.rs           # API response models
-│   │   └── websocket/        # WebSocket client
-│   │       ├── mod.rs
-│   │       ├── client.rs
-│   │       ├── messages.rs   # Message parsing
-│   │       └── channels.rs   # Channel subscriptions
-│   ├── execution/            # Execution plane
-│   │   ├── mod.rs
-│   │   ├── gateway.rs        # Order orchestration
-│   │   ├── rate_limiter.rs   # 15 TPS limit enforcement
-│   │   ├── priority_queue.rs # Priority-based order queue
-│   │   ├── confirmation.rs   # Trade confirmation tracking
-│   │   └── risk_manager.rs   # Risk controls & circuit breaker
-│   ├── strategy/             # Control plane strategies
-│   │   ├── mod.rs
-│   │   ├── arbitrage.rs      # Arbitrage detection (Yes/No, NegRisk, Mint-Sell)
-│   │   ├── market_scanner.rs # Market discovery & orderbook tracking
-│   │   ├── scoreboard.rs     # Performance metrics
-│   │   └── rotator.rs       # Market rotation logic
-│   ├── chain/                # Blockchain interactions
-│   │   ├── mod.rs
-│   │   ├── client.rs         # RPC client with retry logic
-│   │   └── conditional_tokens.rs  # ERC-1155 contract calls
-│   └── types/                # Shared types
-│       ├── mod.rs
-│       ├── order.rs          # Order structures
-│       ├── market.rs         # Market information
-│       └── position.rs      # Position tracking
-├── tests/                   # Integration tests
-│   ├── live_account_tests.rs        # Auth, balance, proxy address
-│   ├── live_market_data.rs          # Markets, orderbook, quote tokens
-│   ├── live_order_tests.rs          # Order lifecycle
-│   ├── live_trade_integration.rs    # Complete trading workflow
-│   ├── live_websocket_tests.rs       # WebSocket connection & subscriptions
-│   ├── live_user_data_tests.rs       # Positions, balances, trades
-│   ├── live_batch_operations.rs      # Batch place/cancel orders
-│   ├── trading_scenarios.rs          # EIP-712 signing scenarios
-│   ├── dual_mode_client.rs           # Local/AWS environment switching
-│   ├── live_extended_api_tests.rs    # Price history, order by ID, etc.
-│   └── small_scale_arbitrage_test.rs # Arbitrage detection tests
-└── examples/                # Usage examples (optional)
-    ├── basic_arbitrage.rs
-    └── custom_strategy.rs
 ```
 
 **Key Design Decisions:**

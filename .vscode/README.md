@@ -104,6 +104,19 @@ Use the Command Palette (Cmd+Shift+P) and select "Tasks: Run Task":
 Debug configurations automatically set these environment variables:
 - `RUST_LOG=debug` - Enable debug logging
 - `RUST_BACKTRACE=1` - Enable backtraces on panic
+- `OPINION_ENV=local` - Use local environment with proxy
+- `OPINION_PROXY_URL=http://127.0.0.1:7890` - Proxy URL for TLS fingerprint bypass
+
+**Proxy Configuration**:
+All debug configurations are pre-configured to use a proxy (`http://127.0.0.1:7890` by default). This is required for local development to bypass Kong Gateway's TLS fingerprinting.
+
+**Before debugging**:
+1. Ensure your proxy software (e.g., FlClash, V2Ray) is running on port 7890
+2. Verify proxy is accessible by checking `curl -x http://127.0.0.1:7890 https://proxy.opinion.trade:8443/openapi/health`
+
+**To change proxy URL**:
+- Modify `OPINION_PROXY_URL` in `.vscode/launch.json` (for debugger)
+- Modify `OPINION_PROXY_URL` in `.vscode/settings.json` (for integrated terminal)
 
 For live integration tests, ensure your `.env` file contains:
 ```env
@@ -137,9 +150,36 @@ sudo apt-get install lldb
 3. Verify breakpoints are set in the right file
 
 ### Integration tests fail
-1. Check that `.env` file exists in `opinion-hft/` directory
+1. Check that `.env` file exists in project root directory
 2. Verify API credentials are valid
 3. Ensure proxy is running if using `OPINION_ENV=local`
+
+### Proxy connection errors
+**Symptoms**: Connection timeout, DNS resolution failed, or 403 Forbidden errors
+
+**Solutions**:
+1. **Check proxy is running**:
+   ```bash
+   # Test proxy connectivity
+   curl -x http://127.0.0.1:7890 https://proxy.opinion.trade:8443/openapi/health
+   ```
+
+2. **Verify proxy port**:
+   - FlClash default: `http://127.0.0.1:7890` (HTTP) or `socks5://127.0.0.1:7890` (SOCKS5)
+   - V2Ray default: `http://127.0.0.1:10809` (HTTP) or `socks5://127.0.0.1:10808` (SOCKS5)
+
+3. **Update proxy URL in configuration**:
+   - Edit `.vscode/launch.json` - update `OPINION_PROXY_URL` for debugger
+   - Edit `.vscode/settings.json` - update `OPINION_PROXY_URL` for terminal
+
+4. **Disable proxy for AWS environment**:
+   - Set `OPINION_ENV=aws` to bypass proxy
+   - AWS Tokyo region doesn't require proxy for Kong Gateway
+
+5. **Check TLS fingerprinting**:
+   - Kong Gateway uses JA3 TLS fingerprinting
+   - Proxy is required on local machines to bypass this
+   - Direct connections may be rejected with 403 Forbidden
 
 ## Keyboard Shortcuts
 

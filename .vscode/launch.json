@@ -19,7 +19,9 @@
             "args": [],
             "cwd": "${workspaceFolder}",
             "env": {
-                "RUST_LOG": "debug"
+                "RUST_LOG": "debug",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             },
             "preLaunchTask": "cargo: build opinion-hft"
         },
@@ -43,7 +45,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
         },
         {
@@ -61,7 +65,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
         },
         {
@@ -73,7 +79,7 @@
                     "test",
                     "--no-run",
                     "--package=opinion-hft",
-                    "--test=live_integration"
+                    "--test=live_trade_integration"
                 ]
             },
             "args": [
@@ -82,7 +88,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
         },
         {
@@ -104,7 +112,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
         },
         {
@@ -123,7 +133,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "info",
-                "RUST_BACKTRACE": "1"
+                "RUST_BACKTRACE": "1",
+                "OPINION_ENV": "local",
+                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
         }
     ],
