@@ -19,7 +19,7 @@ use alloy_primitives::Address;
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Initialize Telemetry (Async Logging)
-    let _guard = init_telemetry();
+    let _guards = init_telemetry();
     info!("Starting Opinion HFT Bot...");
 
     // 2. Load Configuration
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         config.confirmation.clone()
     );
     let confirmation_tracker = Arc::new(confirmation_tracker);
-    let risk_manager = Arc::new(Mutex::new(RiskManager::new(config.risk.clone(), rest_client.clone())));
+    let risk_manager = Arc::new(Mutex::new(RiskManager::new(config.risk.clone(), config.environment, rest_client.clone())));
 
     // 5. Initialize Gateway
     let mut gateway = OrderGateway::new(

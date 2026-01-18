@@ -7,7 +7,7 @@
 //! - Stop-loss protection for arbitrage trades
 //! - Position and exposure limits
 
-use crate::config::RiskConfig;
+use crate::config::{Environment, RiskConfig};
 use crate::data::rest::OpinionClient;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
@@ -29,6 +29,7 @@ pub struct TradeRecord {
 /// Manages operational risks and system health.
 pub struct RiskManager {
     config: RiskConfig,
+    env: Environment,
     rest_client: OpinionClient,
     consecutive_errors: u32,
     is_halted: bool,
@@ -41,9 +42,10 @@ pub struct RiskManager {
 }
 
 impl RiskManager {
-    pub fn new(config: RiskConfig, rest_client: OpinionClient) -> Self {
+    pub fn new(config: RiskConfig, env: Environment, rest_client: OpinionClient) -> Self {
         Self {
             config,
+            env,
             rest_client,
             consecutive_errors: 0,
             is_halted: false,
@@ -56,8 +58,8 @@ impl RiskManager {
         }
     }
 
-    pub fn new_with_defaults(rest_client: OpinionClient) -> Self {
-        Self::new(RiskConfig::default(), rest_client)
+    pub fn new_with_defaults(env: Environment, rest_client: OpinionClient) -> Self {
+        Self::new(RiskConfig::default(), env, rest_client)
     }
 
     pub fn set_initial_equity(&mut self, equity: f64) {
@@ -272,10 +274,18 @@ impl RiskManager {
                 // 3. Validate against thresholds
 
                 // Check Latency
-                if latency > self.config.max_api_latency {
+                let max_latency = self.config.get_max_api_latency(self.env);
+                if latency > max_latency {
+                    let env_name = if self.env.is_local() { "local" } else { "aws" };
+                    let suggestion = if self.env.is_local() {
+                        let proxy_url = std::env::var("OPINION_PROXY_URL").unwrap_or_else(|_| "http://127.0.0.1:7890".to_string());
+                        format!("Check proxy status at {}", proxy_url)
+                    } else {
+                        String::new()
+                    };
                     return Err(Error::RiskLimitExceeded(format!(
-                        "API Latency too high: {:?} > {:?}",
-                        latency, self.config.max_api_latency
+                        "API Latency too high ({} mode): {:?} > {:?}. {}",
+                        env_name, latency, max_latency, suggestion
                     )));
                 }
 
@@ -350,7 +360,8 @@ mod tests {
     #[tokio::test]
     async fn test_risk_manager_creation() {
         let config = RiskConfig::default();
+        let env = Environment::default();
         let client = mock_client();
-        let _rm = RiskManager::new(config, client);
+        let _rm = RiskManager::new(config, env, client);
     }
 }

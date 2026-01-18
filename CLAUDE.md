@@ -39,7 +39,7 @@ cargo run                # Start bot
 | Order Endpoint | `/order` (singular) | `/orders` (plural) |
 | Cancel Order | `POST /order/cancel` + body | `DELETE /order/{id}` |
 | Side Values | `0` (Buy) / `1` (Sell) as strings | "BUY"/"SELL" |
-| Price Precision | 3 decimals (0.001-0.999) | 2 decimals |
+| Price Precision | 1 decimal (0.1-0.9) | 2 or 3 decimals |
 | Minimum Order | 1.30 USDT | - |
 | Market Detail | `/market/{id}` path param, `data` wrapper | `/market/detail?marketId={id}` |
 
@@ -86,6 +86,64 @@ See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diag
 - **Domain Name**: `"OPINION CTF Exchange"` (note the space!)
 - **Amounts**: Wei strings (18 decimals)
 
+## Trading Fees (CRITICAL)
+
+### Maker vs Taker Fees
+- **Maker (限价单)**: **0% 手续费** ✅ - 提供流动性完全免费
+- **Taker (市价单)**: **动态手续费 0% - 2%** - 成交时支付
+
+### 费率计算公式
+```
+基础费率 = topic_rate × price × (1 - price)
+有效费率 = 基础费率 × (1 - vip_discount) × (1 - referral_discount)
+实际手续费 = max(交易金额 × 有效费率, $0.50)
+```
+
+### 费率示例 (topic_rate = 0.02)
+| 价格 | 基础费率 | 说明 |
+|------|---------|------|
+| 0.1 | 0.18% | 低不确定性 |
+| 0.5 | **0.50%** | 最高费率（最大不确定性） |
+| 0.9 | 0.18% | 低不确定性 |
+
+### 关键限制
+- **最小订单金额**: $5.00 USDT
+- **最小手续费**: $0.50 USDT (即使计算值更低)
+- **最小提现金额**: $5.00 USDT
+
+### 折扣系统
+- VIP Program: 根据交易量级别折扣
+- Referral Program: 邀请者获得被邀请者手续费的 5% 返还
+- Promotions: 限时活动折扣
+- **折扣可叠加使用**（乘法累计）
+
+### 实际成本案例
+**市价单 Taker 买入 $100 @ 0.5**:
+- 计算费率: 0.02 × 0.5 × 0.5 = 0.005 (0.5%)
+- 计算手续费: $100 × 0.5% = $0.50
+- 实际收费: $0.50 (达到最低限制)
+
+**小额订单 $10 @ 0.5**:
+- 计算手续费: $10 × 0.5% = $0.05
+- 实际收费: $0.50 (最低手续费底限)
+
+**关键结论**：市价单成交至少损失 $0.50，小额订单更不划算。
+
+### 代码实现
+```rust
+// src/strategy/arbitrage.rs:106-114
+pub fn calculate_fee_rate(&self, price: f64) -> f64 {
+    let base_fee = self.topic_fee_rate * price * (1.0 - price);
+    base_fee * (1.0 - self.referral_discount)
+}
+
+// 默认配置
+topic_fee_rate: 0.02,   // 2% 最大费率
+referral_discount: 0.10, // 10% 邀请折扣
+```
+
+**官方文档**: https://docs.opinion.trade/trade-on-opinion.trade/fees
+
 ## Opinion Clob SDK Source Code
 - **Location**: .venv/lib/python3.12/site-packages/opinion_clob_sdk
 
@@ -115,6 +173,7 @@ See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diag
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
 | 2026-01-18 | Removed all curl subprocess, implemented pure rrequest client with environment detection (local=proxy, aws=direct), ChainClient retry mechanism |
 | 2026-01-18 | Extended curl to ALL endpoints (temporary workaround for 403 Forbidden errors) |
+| 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-17 | OpinionClient caching, RiskManager enhanced |
 | 2026-01-17 | Arbitrage rollback logic implemented |
 | 2026-01-17 | 0 warnings achieved |
@@ -137,3 +196,131 @@ BSC_RPC_URL=https://bsc-dataseed.binance.org
 PRIVATE_KEY=0x...
 OPINION_EOA_ADDRESS=0x...
 ```
+
+## Testing Analysis (2026-01-18)
+
+### Live Test Results
+
+**Summary**: All three live test runs resulted in losses.
+
+**Tests Analyzed**:
+1. `live_order_tests.rs` - Full order lifecycle
+2. `trading_scenarios.rs` - Market scenario testing  
+3. `live_round_trip.rs` - Complete trading workflow
+
+---
+
+### Root Causes of Losses
+
+#### 1. Test Amounts Below Minimum (1.30 USDT)
+
+**Current State**:
+- `live_order_tests.rs:119` - Uses **2.0 USDT** (below 1.30 minimum)
+  - Code: `let price = 0.001; ... Minimum amount is 1.30 USDT. We use 2.0 USDT to be safe.`
+  - Actual value: 2.0 * 0.001 = 0.002 USDT (far below minimum!)
+- `live_batch_operations.rs:59` - Calculates price as **0.01 + i * 0.001**
+  - For `i=1`: price = 0.02, value = 2.0 USDT (barely above minimum)
+  - For `i=2000`: price = 2.01, value = 2000 * 0.001 = 2.0 USDT
+  - **Problem**: Floating point precision and incorrect formula
+
+**Impact**:
+- Orders below 1.30 USDT are **rejected by API**
+- Even when accepted, fills occur at terrible prices (huge slippage)
+
+#### 2. Extreme Price Placement (0.001 USDT)
+
+**Current State**:
+- `live_order_tests.rs:137-150` - Uses price **0.001** to create "ghost orders"
+  - Code: `let price = 0.01; // Very low price (won't fill)`
+  - Intent: Creates order that won't execute but prevents orderbook interference
+
+**Impact**:
+- Wastes API quota
+- Prevents testing real order execution behavior
+- If it fills, slippage would be >99%
+
+#### 3. Market Depth Insufficient
+
+**Current State**:
+- `trading_scenarios.rs:218` - Places 2000 shares at 0.01 price = 2 USDT value
+  - Code: `let price = 0.01; let quantity = 200; // Value = 2 USDT`
+  - Attempting arbitrage with 2 USDT orders on shallow orderbook
+  - Result: Orders pushed prices significantly (high slippage)
+  - Test prices: 0.1, 0.3, 0.5, 0.7, 0.9 (unrealistic spread)
+  - Fee peaks at 0.5: `base_fee = 0.02 * 0.5 * 0.5 = 0.005 (~0.45%)`
+
+**Impact**:
+- Large orders (even 2 USDT) cannot be filled without moving price
+- Real arbitrage opportunities are rare and short-lived
+- Fees + spread = guaranteed loss
+
+#### 4. Actual Arbitrage Conditions
+
+**Market Reality**:
+- Opinion Trade markets are prediction markets with limited orderbook depth
+- Liquidity is often concentrated around current market price
+- Large trades (even small USDT amounts) can move prices significantly
+- Spreads are typically 1-3% at best, not 0-100% in tests
+
+---
+
+### Recommended Fixes
+
+#### Immediate Actions Required
+
+1. **Fix Test Amounts (P0 - Critical)**
+   ```rust
+   // ❌ WRONG - Below minimum
+   let price = 0.001;
+   let quantity = 200;  // Value = 2 USDT (below 1.30!)
+   
+   // ✅ CORRECT - Meet minimum
+   let price = 0.5;  // Mid-range realistic price
+   let quantity = 130;  // 130 * 0.5 = 65 USDT (above 1.30 minimum)
+   ```
+
+2. **Remove Extreme Price Orders**
+   - Delete or comment out ghost order placement (price = 0.001)
+   - Use prices that can actually execute (0.3 - 0.7 range)
+
+3. **Add Market Depth Validation**
+   ```rust
+   // Before placing order, check available liquidity
+   let orderbook = client.get_orderbook(token_id).await?;
+   let total_liquidity = sum_bid_liquidity(orderbook) + sum_ask_liquidity(orderbook);
+   if total_liquidity < 3.0 {  // Below test size
+       warn!("Insufficient liquidity: {:.2} USDT", total_liquidity);
+       return Ok(());
+   }
+   ```
+
+4. **Use Conservative Test Strategy**
+   - Test order flow with 1.5 USDT (not 65 USDT)
+   - Measure actual slippage in production conditions
+   - Validate minimum fill amount and execution quality
+
+---
+
+### Testing Guidelines Going Forward
+
+**When modifying integration tests, follow these rules:**
+
+1. **Minimum Order Amount**: All live tests MUST use **1.30 USDT minimum**
+   - Formula: `price * quantity >= 1.30`
+   - Recommended: Use 1.5 - 65 USDT range with prices 0.3 - 0.7
+
+2. **No Ghost Orders**: Never place orders that won't execute
+   - Minimum price: 0.3 for YES tokens
+   - Never use 0.001 or similar extreme values
+
+3. **Orderbook Awareness**: Check liquidity before placing orders
+   - Ensure total available liquidity is at least 10x the order size
+   - Fail fast if market is shallow
+
+4. **Realistic Test Prices**: Use actual market conditions
+   - Spread in prediction markets is typically 1-3%
+   - Test prices should be 0.3, 0.5, 0.7 (not 0.1, 0.9)
+
+5. **Measure Don't Just Assume**: Always log actual fill amounts, prices, and fees
+   - Calculate and report real P&L for each trade
+   - Use this data to improve strategy, not just pass/fail tests

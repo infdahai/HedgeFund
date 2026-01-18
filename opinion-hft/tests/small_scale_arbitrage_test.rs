@@ -11,12 +11,23 @@ use opinion_hft::strategy::arbitrage::{ArbitrageDetector, ArbitrageConfig, Arbit
 use opinion_hft::strategy::market_scanner::{MarketInfo, MarketOrderbook, OrderbookSide};
 use tracing::info;
 
+/// Helper to initialize logging
+fn init_logs() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    static mut GUARDS: Option<opinion_hft::telemetry::TelemetryGuards> = None;
+
+    unsafe {
+        INIT.call_once(|| {
+            let guards = opinion_hft::telemetry::init_telemetry();
+            GUARDS = Some(guards);
+        });
+    }
+}
+
 /// Helper to initialize the client and configuration
 async fn setup() -> (OpinionClient, Config) {
-    // Initialize tracing for tests if not already initialized
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    init_logs();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
     
@@ -234,9 +245,7 @@ async fn test_arbitrage_detector_mint_sell() {
 
 #[tokio::test]
 async fn test_arbitrage_configuration() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    init_logs();
     
     info!("Testing ArbitrageConfig fee calculation");
     

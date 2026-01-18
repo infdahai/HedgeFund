@@ -255,7 +255,7 @@ impl OrderGateway {
             hedge_intent: hedge_intent.map(Box::new).map(|b| *b),
         });
 
-        let price_str = format!("{:.3}", intent.price);
+        let price_str = format!("{:.1}", intent.price);
         
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -334,13 +334,20 @@ impl OrderGateway {
             let token_id = alloy_primitives::U256::from_str(&leg.token_id)
                 .unwrap_or(alloy_primitives::U256::ZERO);
 
+            let priority = match opportunity.arb_type {
+                crate::strategy::arbitrage::ArbitrageType::NegRisk => crate::types::OrderPriority::Critical,
+                crate::strategy::arbitrage::ArbitrageType::YesNo => crate::types::OrderPriority::High,
+                crate::strategy::arbitrage::ArbitrageType::MintSell => crate::types::OrderPriority::High,
+                crate::strategy::arbitrage::ArbitrageType::SpreadAnomaly => crate::types::OrderPriority::Medium,
+            };
+
             let intent = OrderIntent::new(
                 opportunity.market_id.clone(),
                 token_id,
                 side,
                 leg.price,
-                alloy_primitives::U256::from((leg.size * 1e18) as u128), // Scale size
-            );
+                alloy_primitives::U256::from((leg.size * 1e18) as u128),
+            ).with_priority(priority);
             
             match self.submit_order(intent, None).await {
                 Ok(id) => {
@@ -372,8 +379,8 @@ impl OrderGateway {
                             crate::types::order::OrderSide::Sell => prev_leg.price * 0.95, 
                         };
                         
-                        // Round price to 3 decimals to meet API reqs
-                        let rollback_price = (rollback_price * 1000.0).round() / 1000.0;
+                        // Round price to 1 decimal place to meet API reqs
+                        let rollback_price = (rollback_price * 10.0).round() / 10.0;
 
                         let rollback_intent = OrderIntent::new(
                             opportunity.market_id.clone(),

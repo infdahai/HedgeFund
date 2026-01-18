@@ -2,6 +2,9 @@
 /target/
 # Cargo.lock
 
+#log
+logs/
+
 # IDE
 .idea/
 .vscode/

@@ -329,8 +329,8 @@ impl ArbitrageDetector {
         let bid = orderbook.best_bid()?;
         let ask = orderbook.best_ask()?;
 
-        let bid_price = bid + 0.001;
-        let ask_price = ask - 0.001;
+        let bid_price = bid + 0.1;
+        let ask_price = ask - 0.1;
 
         // Potential profit from placing orders inside the spread
         let spread_captured = ask_price - bid_price;

@@ -94,7 +94,7 @@ async fn test_live_order_lifecycle() -> Result<()> {
     // 2. Market Selection
     tracing::info!("Fetching active markets...");
     let markets = client.get_markets_with_params(Some("activated"), Some(5)).await?;
-    let market = markets.iter().next()
+    let market = markets.first()
         .expect("No active markets found to test against. Please ensure there are activated markets.");
     
     tracing::info!("Selected market: {} (ID: {})", market.market_title, market.market_id);
@@ -117,9 +117,9 @@ async fn test_live_order_lifecycle() -> Result<()> {
 
     // 5. Place Order
     // Minimum amount is 1.30 USDT. We use 2.0 USDT to be safe.
-    // Price 0.001 is extremely deep for YES, unlikely to fill.
+    // Price 0.1 is minimum allowed price
     let quantity = U256::from(2000) * U256::from(10).pow(U256::from(18)); // 2000 shares
-    let price = 0.001;
+    let price = 0.1;
 
     let intent = OrderIntent::new(
         market.market_id.to_string(),

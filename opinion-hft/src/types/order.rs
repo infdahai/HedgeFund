@@ -168,7 +168,7 @@ impl OrderIntent {
         self
     }
 
-    // price: 0.001 - 0.999 (3 decimals)
+    // price: 0.1 - 0.9 (1 decimal place)
     // maker_amount/taker_amount calculation depends on side:
     // BUY: pay USDC to receive shares -> maker_amount = quantity * price, taker_amount = quantity
     // SELL: give shares to receive USDC -> maker_amount = quantity, taker_amount = quantity * price
@@ -285,13 +285,13 @@ mod tests {
 
     #[test]
     fn test_price_to_fraction_edge_cases() {
-        assert_eq!(price_to_fraction(0.001), (1, 1000));
-        assert_eq!(price_to_fraction(0.999), (999, 1000));
+        assert_eq!(price_to_fraction(0.1), (1, 10));
+        assert_eq!(price_to_fraction(0.9), (9, 10));
     }
 
     #[test]
     fn test_exact_price_matching_buy() {
-        for price in [0.123, 0.456, 0.789, 0.001, 0.999] {
+        for price in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] {
             let intent = OrderIntent::new(
                 "test-market",
                 U256::from(1),
@@ -302,8 +302,8 @@ mod tests {
 
             let (maker_amount, taker_amount) = intent.calculate_amounts();
 
-            let maker: f64 = maker_amount.try_into().unwrap();
-            let taker: f64 = taker_amount.try_into().unwrap();
+            let maker: f64 = maker_amount.into();
+            let taker: f64 = taker_amount.into();
 
             let calculated_price = maker / taker;
 
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_exact_price_matching_sell() {
-        for price in [0.123, 0.456, 0.789, 0.001, 0.999] {
+        for price in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] {
             let intent = OrderIntent::new(
                 "test-market",
                 U256::from(1),
@@ -331,8 +331,8 @@ mod tests {
 
             let (maker_amount, taker_amount) = intent.calculate_amounts();
 
-            let maker: f64 = maker_amount.try_into().unwrap();
-            let taker: f64 = taker_amount.try_into().unwrap();
+            let maker: f64 = maker_amount.into();
+            let taker: f64 = taker_amount.into();
 
             let calculated_price = taker / maker;
 

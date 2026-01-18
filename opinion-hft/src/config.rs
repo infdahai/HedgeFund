@@ -35,14 +35,14 @@ pub const WEBSOCKET_URL: &str = "wss://ws.opinion.trade";
 /// Default API rate limit (requests per second)
 pub const DEFAULT_RATE_LIMIT_TPS: u32 = 15;
 
-/// Price precision (3 decimal places: 0.001 - 0.999)
-pub const PRICE_DECIMALS: u32 = 3;
+/// Price precision (1 decimal place: 0.1 - 0.9)
+pub const PRICE_DECIMALS: u32 = 1;
 
 /// Minimum price
-pub const MIN_PRICE: f64 = 0.001;
+pub const MIN_PRICE: f64 = 0.1;
 
 /// Maximum price
-pub const MAX_PRICE: f64 = 0.999;
+pub const MAX_PRICE: f64 = 0.9;
 
 // ============ Configuration Structs ============
 
@@ -74,8 +74,12 @@ pub struct Config {
 /// Risk management configuration.
 #[derive(Debug, Clone)]
 pub struct RiskConfig {
-    /// Maximum allowed API latency before warning/stopping
+    /// Maximum allowed API latency before warning/stopping (legacy, for backward compatibility)
     pub max_api_latency: Duration,
+    /// Maximum allowed API latency for local environment (proxy, higher latency)
+    pub max_api_latency_local: Duration,
+    /// Maximum allowed API latency for AWS environment (direct, low latency)
+    pub max_api_latency_aws: Duration,
     /// Maximum allowed clock drift between local and server
     pub max_clock_drift: Duration,
     /// Number of consecutive errors to trigger circuit breaker
@@ -94,10 +98,21 @@ pub struct RiskConfig {
     pub max_total_exposure: f64,
 }
 
+impl RiskConfig {
+    pub fn get_max_api_latency(&self, env: Environment) -> Duration {
+        match env {
+            Environment::Local => self.max_api_latency_local,
+            Environment::Aws => self.max_api_latency_aws,
+        }
+    }
+}
+
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
-            max_api_latency: Duration::from_millis(1200), // Increased from 500ms for hybrid client
+            max_api_latency: Duration::from_millis(3000),
+            max_api_latency_local: Duration::from_millis(3000),
+            max_api_latency_aws: Duration::from_millis(500),
             max_clock_drift: Duration::from_secs(2),
             max_consecutive_errors: 5,
             max_daily_loss: 100.0,
@@ -106,6 +121,15 @@ impl Default for RiskConfig {
             max_execution_time_ms: 500,
             max_position_per_market: 500.0,
             max_total_exposure: 2000.0,
+        }
+    }
+}
+
+impl ExecutionConfig {
+    pub fn get_health_check_interval(&self, env: Environment) -> Duration {
+        match env {
+            Environment::Local => self.health_check_interval_local,
+            Environment::Aws => self.health_check_interval_aws,
         }
     }
 }
@@ -165,6 +189,10 @@ pub struct ExecutionConfig {
 
     /// Order expiration buffer (added to current time)
     pub order_expiration_buffer: Duration,
+
+    pub health_check_interval_local: Duration,
+
+    pub health_check_interval_aws: Duration,
 }
 
 /// WebSocket configuration.
@@ -284,7 +312,9 @@ impl Default for ExecutionConfig {
             rate_limit_tps: DEFAULT_RATE_LIMIT_TPS,
             burst_capacity: 3,
             max_queue_size: 1000,
-            order_expiration_buffer: Duration::from_secs(300), // 5 minutes
+            order_expiration_buffer: Duration::from_secs(300),
+            health_check_interval_local: Duration::from_secs(15),
+            health_check_interval_aws: Duration::from_secs(3),
         }
     }
 }
@@ -559,8 +589,8 @@ mod tests {
     fn test_constants() {
         assert_eq!(EIP712_DOMAIN_NAME, "OPINION CTF Exchange");
         assert_eq!(CHAIN_ID, 56);
-        assert_eq!(PRICE_DECIMALS, 3);
-        assert!((MIN_PRICE - 0.001).abs() < f64::EPSILON);
-        assert!((MAX_PRICE - 0.999).abs() < f64::EPSILON);
+        assert_eq!(PRICE_DECIMALS, 1);
+        assert!((MIN_PRICE - 0.1).abs() < f64::EPSILON);
+        assert!((MAX_PRICE - 0.9).abs() < f64::EPSILON);
     }
 }

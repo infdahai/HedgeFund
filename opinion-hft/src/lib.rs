@@ -18,7 +18,7 @@
 //! - Chain ID: 56 (BNB Chain)
 //! - ConditionalTokens: 0xAD1a38cEc043e70E83a3eC30443dB285ED10D774
 //! - API Rate Limit: 15 TPS
-//! - Price Precision: 3 decimals (0.001 - 0.999)
+//! - Price Precision: 1 decimal place (0.1 - 0.9)
 
 pub mod auth;
 pub mod chain;

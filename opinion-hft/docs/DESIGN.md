@@ -906,7 +906,7 @@ See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
 
 #### 5.10.1 Logging (tracing)
 
-Structured logging for all system events.
+Structured logging with dual output (stdout + file) for production observability.
 
 **Log Levels:**
 - `ERROR`: System failures, critical errors
@@ -915,22 +915,121 @@ Structured logging for all system events.
 - `DEBUG`: Detailed API responses, internal state changes
 - `TRACE`: Very fine-grained execution details
 
-**Log Format:**
+**Dual Output Architecture:**
 
-```json
-{
-  "timestamp": "2026-01-18T10:30:45.123Z",
-  "level": "INFO",
-  "target": "opinion_hft::execution::gateway",
-  "message": "Order submitted successfully",
-  "fields": {
-    "order_id": "ord_abc123",
-    "market_id": 12345,
-    "side": "Buy",
-    "price": "0.450",
-    "size": "100.0"
-  }
+```
+Application Logs
+      │
+      ▼
+┌─────────────┐   tracing_appender::non_blocking
+│  tracing    │ ────────────────────────────────────▶
+│  subscriber │   (Zero-copy channel to background thread)
+└─────────────┘
+      │
+      └───────────────┬───────────────────────┐
+                      │                       │
+              ┌───────▼───────┐       ┌───────▼───────┐
+              │   Stdout      │       │   File        │
+              │   WorkerGuard │       │   WorkerGuard │
+              │               │       │               │
+              │ Compact format│       │ Full metadata │
+              │ + colors      │       │ for debugging │
+              └───────┬───────┘       └───────┬───────┘
+                      │                       │
+                      ▼                       ▼
+                Terminal Output       logs/opinion-hft.log.
+                                       YYYY-MM-DD
+```
+
+**Lifecycle Management:**
+
+```rust
+pub struct TelemetryGuards {
+    pub stdout: WorkerGuard,  // Must be held for logging lifetime
+    pub file: WorkerGuard,    // Must be held for logging lifetime
 }
+
+pub fn init_telemetry() -> TelemetryGuards {
+    let (stdout_writer, stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
+    let file_appender = tracing_appender::rolling::daily("logs", "opinion-hft.log");
+    let (file_writer, file_guard) = tracing_appender::non_blocking(file_appender);
+    
+    // Stdout: compact format for real-time monitoring
+    let stdout_layer = fmt::layer()
+        .with_writer(stdout_writer)
+        .with_thread_ids(true)
+        .with_target(false)
+        .compact();
+    
+    // File: full metadata for production debugging
+    let file_layer = fmt::layer()
+        .with_writer(file_writer)
+        .with_ansi(false)
+        .with_thread_ids(true)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true);
+    
+    Registry::default()
+        .with(env_filter)
+        .with(stdout_layer)
+        .with(file_layer)
+        .try_init()?;
+    
+    TelemetryGuards { stdout: stdout_guard, file: file_guard }
+}
+```
+
+**Important**: `WorkerGuard` must be held for the entire program lifetime. Dropping it early will stop logging. The main function returns `TelemetryGuards` to enforce this:
+
+```rust
+#[tokio::main]
+async fn main() -> Result<()> {
+    let _guards = telemetry::init_telemetry();
+    // Guards dropped automatically at scope end
+}
+```
+
+**Log Rotation:**
+
+- Pattern: `logs/opinion-hft.log.YYYY-MM-DD`
+- Rotation: Daily at midnight (system timezone)
+- Retention: Manual cleanup (no automatic deletion)
+- Format: Structured text with timestamp, level, target, message
+
+**Configuration:**
+
+```bash
+# Log level filtering (default: info)
+export RUST_LOG=info,opinion_hft=debug
+
+# Module-specific filtering
+export RUST_LOG=opinion_hft::execution=debug,opinion_hft::strategy=trace
+```
+
+**Test Infrastructure:**
+
+Integration tests use a helper function to initialize logging safely:
+
+```rust
+pub fn init_logs() {
+    static INIT: Once = Once::new();
+    static mut GUARDS: Option<TelemetryGuards> = None;
+    unsafe {
+        INIT.call_once(|| {
+            let guards = telemetry::init_telemetry();
+            GUARDS = Some(guards);
+        });
+    }
+}
+```
+
+This pattern prevents duplicate initialization crashes in multi-threaded test environments.
+
+**Log Format Example:**
+
+```
+2026-01-19T10:30:45.123Z INFO src/execution/gateway.rs:245 ThreadId(02) opinion_hft::execution::gateway: Order submitted successfully order_id="ord_abc123" market_id=12345 side="Buy" price="0.450" size="100.0"
 ```
 
 **Key Events Logged:**

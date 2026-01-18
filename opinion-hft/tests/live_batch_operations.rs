@@ -6,7 +6,6 @@ use opinion_hft::auth::OrderSigner;
 use alloy_primitives::{Address, U256};
 use tracing::{info, warn};
 use std::time::Duration;
-use serde_json::Value;
 
 async fn setup() -> (OpinionClient, Config) {
     let _ = tracing_subscriber::fmt()
@@ -56,7 +55,7 @@ async fn test_place_orders_batch() {
     
     for i in 0..2 {
         // Unique price or salt to differentiate
-        let price = 0.01 + (i as f64 * 0.001); 
+        let price = 0.2 + (i as f64 * 0.1); 
         let quantity = U256::from(200u128 * 1_000_000_000_000_000_000u128); // 200 shares
 
         let intent = OrderIntent::new(
