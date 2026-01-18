@@ -32,8 +32,8 @@ async fn main() -> Result<()> {
 
     let chain_client = ChainClient::new(&config.chain, maker_address)?;
     let rest_client = OpinionClient::new(&config.api, config.environment)?;
-    let ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());
-    let signer = Eip712Signer::from_secret(&config.chain.private_key)?;
+    let ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
+    let mut signer = Eip712Signer::from_secret(&config.chain.private_key)?;
 
     // Initialize OpinionClient (fetch and cache protected endpoint data once at startup)
     // Uses rrequest with Chrome120 TLS emulation (local=proxy, aws=direct)
@@ -42,6 +42,17 @@ async fn main() -> Result<()> {
     const QUOTE_TOKEN: &str = "0x55d398326f99059fF775485246999027B3197955";
     rest_client.init(config.chain.chain_id, QUOTE_TOKEN).await?;
     info!("OpinionClient initialized successfully");
+
+    // Set the CTF Exchange address as verifyingContract for EIP-712 signatures
+    // This is CRITICAL: the CTF Exchange address is different from ConditionalTokens address
+    if let Some(exchange_address_str) = rest_client.get_cached_exchange_address().await {
+        let exchange_address: Address = exchange_address_str.parse()
+            .map_err(|e| Error::ConfigError(format!("Invalid exchange address: {}", e)))?;
+        signer.set_verifying_contract(exchange_address);
+        info!("EIP-712 verifyingContract set to CTF Exchange: {}", exchange_address);
+    } else {
+        return Err(Error::ConfigError("CTF Exchange address not found after initialization".to_string()));
+    }
 
     // Get cached proxy address for Gnosis Safe support
     let proxy_address_opt = rest_client.get_cached_proxy_address().await;
@@ -53,7 +64,7 @@ async fn main() -> Result<()> {
 
 
     // 4. Initialize Execution Components
-    let rate_limiter = RateLimiter::new(15, 15); // 15 TPS, burst 15
+    let rate_limiter = RateLimiter::new(15, 3); // 15 TPS, burst 3
     let (confirmation_tracker, mut confirmation_rx) = ConfirmationTracker::new(
         chain_client.clone(),
         config.confirmation.clone()

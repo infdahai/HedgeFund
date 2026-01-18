@@ -28,12 +28,13 @@ struct SubscribeMessage {
     channel: String,
 }
 
-pub struct WebSocketClient {
+ pub struct WebSocketClient {
     config: WebSocketConfig,
     api_key: String,
     event_tx: broadcast::Sender<WsEvent>,
     command_tx: Option<mpsc::Sender<WsCommand>>,
     is_connected: Arc<RwLock<bool>>,
+    environment: crate::config::Environment,
 }
 
 enum WsCommand {
@@ -45,7 +46,7 @@ enum WsCommand {
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 impl WebSocketClient {
-    pub fn new(config: &WebSocketConfig, api_key: String) -> Self {
+    pub fn new(config: &WebSocketConfig, api_key: String, environment: crate::config::Environment) -> Self {
         let (event_tx, _) = broadcast::channel(1024);
 
         Self {
@@ -54,6 +55,7 @@ impl WebSocketClient {
             event_tx,
             command_tx: None,
             is_connected: Arc::new(RwLock::new(false)),
+            environment,
         }
     }
 
@@ -73,7 +75,7 @@ impl WebSocketClient {
             
         let headers = request.headers_mut();
         headers.insert(
-            "User-Agent", 
+            "User-Agent",
             "opinion-hft/1.0".parse().unwrap()
         );
         // Some APIs require Origin matching the host
@@ -81,6 +83,10 @@ impl WebSocketClient {
             "Origin",
             "https://opinion.trade".parse().unwrap()
         );
+
+        if self.environment.is_local() {
+            tracing::info!("Local environment detected. Ensure HTTPS_PROXY is configured if proxy is needed.");
+        }
 
         let (ws_stream, _) = connect_async(request)
             .await
@@ -251,14 +257,14 @@ mod tests {
     #[test]
     fn test_websocket_client_creation() {
         let config = mock_config();
-        let client = WebSocketClient::new(&config, "test-key".into());
+        let client = WebSocketClient::new(&config, "test-key".into(), crate::config::Environment::default());
         assert!(client.command_tx.is_none());
     }
 
     #[test]
     fn test_event_subscription() {
         let config = mock_config();
-        let client = WebSocketClient::new(&config, "test-key".into());
+        let client = WebSocketClient::new(&config, "test-key".into(), crate::config::Environment::default());
         let _rx = client.subscribe_events();
     }
 

@@ -39,4 +39,6 @@ pub struct TradeRecord {
     pub order_id: String,
     pub tx_hash: Option<String>,
     pub amount: Option<String>,
+    pub price: Option<String>,
+    pub avg_price: Option<String>,
 }

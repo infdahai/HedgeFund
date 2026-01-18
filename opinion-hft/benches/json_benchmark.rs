@@ -1,7 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use serde::{Deserialize, Serialize};
+// JSON Parsing Performance Benchmark Tests
+//
+// Tests for comparing serde_json vs simd_json performance.
+// Target latency: < 0.05ms (50μs) per parse.
 
-#[derive(Debug, Deserialize, Serialize)]
+use std::time::Instant;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct OrderUpdate {
     order_id: String,
     status: String,
@@ -9,73 +13,105 @@ struct OrderUpdate {
     filled_shares: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct TradeRecord {
     order_id: String,
     tx_hash: Option<String>,
     amount: Option<String>,
 }
 
-fn bench_serde_json(c: &mut Criterion) {
-    let mut group = c.benchmark_group("serde_json");
-
+#[test]
+fn benchmark_json_parsing() {
     let order_update_json = r#"{"order_id":"12345","status":"Finish","shares":"1000000000000000000","filled_shares":"1000000000000000000"}"#;
     let trade_record_json = r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
     let market_data_json = r#"{"channel":"market.data.BTC-YES","data":{"bids":[["0.700","1000000000000000000"],["0.695","2000000000000000000"]],"asks":[["0.710","1000000000000000000"]]}}"#;
 
-    group.bench_function("order_update_small", |b| {
-        b.iter(|| {
-            let _: OrderUpdate = serde_json::from_str(black_box(order_update_json)).unwrap();
-        });
-    });
+    const ITERATIONS: usize = 10_000;
 
-    group.bench_function("trade_record_small", |b| {
-        b.iter(|| {
-            let _: TradeRecord = serde_json::from_str(black_box(trade_record_json)).unwrap();
-        });
-    });
+    println!("\n=== JSON Parsing Benchmark ({} iterations) ===\n", ITERATIONS);
 
-    group.bench_function("market_data_medium", |b| {
-        b.iter(|| {
-            let val: serde_json::Value = serde_json::from_str(black_box(market_data_json)).unwrap();
-            black_box(val);
-        });
-    });
+    // Test 1: OrderUpdate with serde_json
+    println!("Test: serde_json::from_str (OrderUpdate)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let _: OrderUpdate = serde_json::from_str(order_update_json).unwrap();
+    }
+    let serde_time = start.elapsed();
+    println!("  Total: {:?}", serde_time);
+    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
 
-    group.finish();
+    // Test 2: OrderUpdate with simd_json
+    println!("Test: simd_json::from_slice (OrderUpdate)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let mut buffer = order_update_json.as_bytes().to_vec();
+        let _: OrderUpdate = simd_json::from_slice(&mut buffer).unwrap();
+    }
+    let simd_time = start.elapsed();
+    println!("  Total: {:?}", simd_time);
+    println!("  Avg per iteration: {:?}\n", simd_time / ITERATIONS as u32);
+
+    let speedup = serde_time.as_nanos() as f64 / simd_time.as_nanos() as f64;
+    println!("  Speedup: {:.2}x \n", speedup);
+
+    // Test 3: TradeRecord with serde_json
+    println!("Test: serde_json::from_str (TradeRecord)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let _: TradeRecord = serde_json::from_str(trade_record_json).unwrap();
+    }
+    let serde_time = start.elapsed();
+    println!("  Total: {:?}", serde_time);
+    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
+
+    // Test 4: TradeRecord with simd_json
+    println!("Test: simd_json::from_slice (TradeRecord)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let mut buffer = trade_record_json.as_bytes().to_vec();
+        let _: TradeRecord = simd_json::from_slice(&mut buffer).unwrap();
+    }
+    let simd_time = start.elapsed();
+    println!("  Total: {:?}", simd_time);
+    println!("  Avg per iteration: {:?}\n", simd_time / ITERATIONS as u32);
+
+    let speedup = serde_time.as_nanos() as f64 / simd_time.as_nanos() as f64;
+    println!("  Speedup: {:.2}x \n", speedup);
+
+    // Test 5: MarketData with serde_json
+    println!("Test: serde_json::from_str (MarketData)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let val: serde_json::Value = serde_json::from_str(market_data_json).unwrap();
+        let _ = val;
+    }
+    let serde_time = start.elapsed();
+    println!("  Total: {:?}", serde_time);
+    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
+
+    // Test 6: MarketData with simd_json
+    println!("Test: simd_json::to_owned_value (MarketData)");
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        let mut buffer = market_data_json.as_bytes().to_vec();
+        let val: simd_json::OwnedValue = simd_json::to_owned_value(&mut buffer).unwrap();
+        let _ = val;
+    }
+    let simd_time = start.elapsed();
+    println!("  Total: {:?}", simd_time);
+    println!("  Avg per iteration: {:?}\n", simd_time / ITERATIONS as u32);
+
+    let speedup = serde_time.as_nanos() as f64 / simd_time.as_nanos() as f64;
+    println!("  Speedup: {:.2}x \n", speedup);
+
+    // Verify performance target
+    println!("=== Target Verification ===");
+    println!("Target: < 0.05ms (50μs) per parse");
+    let avg_us = simd_time.as_micros() as f64 / ITERATIONS as f64;
+    assert!(
+        avg_us < 50.0,
+        "Performance target not met: {:.2}μs >= 50μs",
+        avg_us
+    );
+    println!("✅ PASS: Average {:.2}μs < 50μs", avg_us);
 }
-
-fn bench_simd_json(c: &mut Criterion) {
-    let mut group = c.benchmark_group("simd_json");
-
-    let order_update_json = r#"{"order_id":"12345","status":"Finish","shares":"1000000000000000000","filled_shares":"1000000000000000000"}"#;
-    let trade_record_json = r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
-    let market_data_json = r#"{"channel":"market.data.BTC-YES","data":{"bids":[["0.700","1000000000000000000"],["0.695","2000000000000000000"]],"asks":[["0.710","1000000000000000000"]]}}"#;
-
-    group.bench_function("order_update_small", |b| {
-        b.iter(|| {
-            let mut buffer = black_box(order_update_json).as_bytes().to_vec();
-            let _: OrderUpdate = simd_json::from_slice(&mut buffer).unwrap();
-        });
-    });
-
-    group.bench_function("trade_record_small", |b| {
-        b.iter(|| {
-            let mut buffer = black_box(trade_record_json).as_bytes().to_vec();
-            let _: TradeRecord = simd_json::from_slice(&mut buffer).unwrap();
-        });
-    });
-
-    group.bench_function("market_data_medium", |b| {
-        b.iter(|| {
-            let mut buffer = black_box(market_data_json).as_bytes().to_vec();
-            let val: simd_json::OwnedValue = simd_json::to_owned_value(&mut buffer).unwrap();
-            black_box(val);
-        });
-    });
-
-    group.finish();
-}
-
-criterion_group!(benches, bench_serde_json, bench_simd_json);
-criterion_main!(benches);

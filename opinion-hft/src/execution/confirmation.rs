@@ -63,6 +63,10 @@ impl ConfirmationTracker {
         self.pending.insert(order.order_id.clone(), order);
     }
 
+    pub fn chain_client(&self) -> &ChainClient {
+        &self.chain_client
+    }
+
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }

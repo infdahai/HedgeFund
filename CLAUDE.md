@@ -68,7 +68,8 @@ See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diag
 - **Domain Name**: `"OPINION CTF Exchange"` (note the space!)
 - **Amounts**: Wei strings (18 decimals)
 
-
+## Opinion Clob SDK Source Code
+- **Location**: .venv/lib/python3.12/site-packages/opinion_clob_sdk
 
 ## Confirmation Flow
 1. Submit order → REST API
@@ -85,6 +86,7 @@ See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diag
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-18 | API Compatibility Fixes: tradingMethod type (i32), added sign/safeRate/orderExpTime fields, fixed EIP-712 VerifyingContract to use CTF Exchange address, Fraction-based amount calculation, Serde camelCase verified, cancel order orderId confirmed |
 | 2026-01-18 | Implemented post-trade validation in RiskManager (slippage, execution time, P&L tracking, circuit breaker) |
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
 | 2026-01-18 | Removed all curl subprocess, implemented pure rrequest client with environment detection (local=proxy, aws=direct), ChainClient retry mechanism |

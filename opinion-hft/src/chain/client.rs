@@ -63,14 +63,14 @@ impl ChainClient {
                 Ok(balance) => return Ok(balance._0),
                 Err(e) => {
                     let err_str: String = e.to_string();
-                    let is_transient = err_str.contains("timeout") 
+                    let is_transient = err_str.contains("timeout")
                         || err_str.contains("connection")
                         || err_str.contains("503")
                         || err_str.contains("429");
-                    
+
                     if is_transient && attempt < 3 {
                         tracing::warn!("RPC error on attempt {}, retrying: {}", attempt, err_str);
-                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt as u32 - 1))).await;
                         continue;
                     }
                     return Err(Error::ContractError {
@@ -91,18 +91,18 @@ impl ChainClient {
             return Ok(Vec::new());
         }
 
-        let provider = self.provider.clone();
-        let contract = IConditionalTokensInstance::new(self.contract_address, provider);
-
-        let accounts: Vec<Address> = vec![self.account; token_ids.len()];
-        let ids: Vec<U256> = token_ids.to_vec();
-
         for attempt in 1..=3 {
+            let provider = self.provider.clone();
+            let contract = IConditionalTokensInstance::new(self.contract_address, provider);
+
+            let accounts: Vec<Address> = vec![self.account; token_ids.len()];
+            let ids: Vec<U256> = token_ids.to_vec();
+
             match contract.balanceOfBatch(accounts.clone(), ids.clone()).call().await {
                 Ok(balances) => {
                     let positions = token_ids
                         .iter()
-                        .zip(balances._0.iter())
+                        .zip(balances._0.as_slice())
                         .map(|(token_id, balance)| Position::new(*token_id, *balance))
                         .collect();
                     return Ok(positions);
@@ -111,12 +111,12 @@ impl ChainClient {
                     let err_str: String = e.to_string();
                     let is_transient = err_str.contains("timeout") 
                         || err_str.contains("connection")
-                        || err_str.contains("503")
+                         || err_str.contains("503")
                         || err_str.contains("429");
                     
                     if is_transient && attempt < 3 {
                         tracing::warn!("RPC error on attempt {}, retrying: {}", attempt, err_str);
-                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt as u32 - 1))).await;
                         continue;
                     }
                     return Err(Error::ContractError {

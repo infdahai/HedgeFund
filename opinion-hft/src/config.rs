@@ -228,8 +228,8 @@ pub enum ConfirmationMode {
 /// Execution environment for the bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Environment {
-    #[default]
     Local,
+    #[default]
     Aws,
 }
 

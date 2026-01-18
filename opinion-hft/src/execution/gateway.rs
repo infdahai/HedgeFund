@@ -29,6 +29,24 @@ struct SignedOrderPayload {
     #[serde(flatten)]
     order: Order,
     signature: String,
+    
+    #[serde(rename = "sign")]
+    sign: String,
+    #[serde(rename = "safeRate")]
+    safe_rate: String,
+    #[serde(rename = "orderExpTime")]
+    order_exp_time: String,
+    
+    #[serde(rename = "price")]
+    price: String,
+    #[serde(rename = "topicId")]
+    topic_id: String,
+    #[serde(rename = "timestamp")]
+    timestamp: u64,
+    #[serde(rename = "tradingMethod")]
+    trading_method: i32,
+    #[serde(rename = "currencyAddress")]
+    currency_address: String,
 }
 
 pub struct OrderGateway {
@@ -131,20 +149,13 @@ impl OrderGateway {
                         .on_order_finish(&update.order_id, None)
                         .await? 
                     {
-                        // Record trade in Risk Manager
-                        // We use the limit price as the execution price (optimistic/limit assumption)
-                        // since we don't have the exact match price from the fill event yet.
-                        let execution_price = confirmed.expected_price; 
-                        
-                        // Calculate approximate P&L (Slippage only)
-                        // This is technically "Slippage P&L", not "Realized P&L"
-                        // Realized P&L requires matching an entry with an exit.
-                        let slippage_pnl = 0.0; 
+                        let execution_price = confirmed.expected_price;
+                        let slippage_pnl = 0.0;
 
                         let trade_record = TradeRecord {
                             trade_id: confirmed.order_id.clone(),
                             market_id: confirmed.market_id.clone(),
-                            expected_profit: 0.0, // We don't track expected profit per-order yet
+                            expected_profit: 0.0,
                             actual_pnl: slippage_pnl,
                             expected_price: confirmed.expected_price,
                             actual_price: execution_price,
@@ -169,6 +180,15 @@ impl OrderGateway {
             WsEvent::Connected => {
                 info!("WebSocket connected");
                 self.ws_client.subscribe("trade.order.update").await?;
+                self.ws_client.subscribe("trade.record.new").await?;
+            }
+            WsEvent::TradeRecord(record) => {
+                info!("Trade record received for order {}", record.order_id);
+                if let Some(price_str) = record.avg_price.or(record.price) {
+                    if let Ok(real_price) = price_str.parse::<f64>() {
+                        info!("Real execution price for order {}: {}", record.order_id, real_price);
+                    }
+                }
             }
             _ => {}
         }
@@ -215,7 +235,14 @@ impl OrderGateway {
 
         let signature = self.signer.sign_order(&order)?;
 
-        let position_before = alloy_primitives::U256::ZERO; 
+        let position_before = self.confirmation_tracker
+            .chain_client()
+            .balance_of(intent.token_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to query position before order: {}. Using ZERO.", e);
+                alloy_primitives::U256::ZERO
+            });
 
         self.confirmation_tracker.register_order(PendingOrder {
             order_id: "pending".into(),
@@ -228,9 +255,31 @@ impl OrderGateway {
             hedge_intent: hedge_intent.map(Box::new).map(|b| *b),
         });
 
+        let price_str = format!("{:.3}", intent.price);
+        
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let topic_id = intent.market_id.clone();
+        
+        const USDT_ADDRESS: &str = "0x55d398326f99059fF775485246999027B3197955";
+
+        let sign = signature.to_hex()[2..66].to_string();
+        let order_exp_time = order.expiration.to_string();
+        
         let payload = SignedOrderPayload {
             order,
             signature: signature.to_hex(),
+            sign,
+            safe_rate: "0".to_string(),
+            order_exp_time,
+            price: price_str,
+            topic_id,
+            timestamp,
+            trading_method: 2,
+            currency_address: USDT_ADDRESS.to_string(),
         };
 
         let response: OpinionResponse<serde_json::Value> = self
