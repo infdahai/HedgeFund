@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     // 3. Initialize Clients
     info!("🔌 Initializing clients...");
     
-    let rest_client = OpinionClient::new(&config.api)?;
+    let rest_client = OpinionClient::new(&config.api, config.environment)?;
     info!("✅ REST Client initialized");
 
     let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone());

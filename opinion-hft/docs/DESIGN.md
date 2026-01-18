@@ -162,7 +162,7 @@ Build a high-frequency trading (HFT) framework for the Opinion Trade prediction 
 | Ethereum Library | Alloy | 10x faster than ethers-rs, actively maintained |
 | EIP-712 Signing | alloy-sol-types + k256 | Pure Rust, no FFI overhead |
 | Rate Limiting | Governor | GCRA algorithm, 15ns per check, single AtomicU64 |
-| HTTP Client | curl subprocess | Bypasses JA3 TLS fingerprinting on all endpoints |
+| HTTP Client | rrequest + Chrome120 emulation | Bypasses JA3 TLS fingerprinting on all endpoints |
 | WebSocket | tokio-tungstenite | Native async WebSocket |
 | Concurrent Map | DashMap | Lock-free concurrent HashMap |
 1.3 User Requirements
@@ -551,12 +551,17 @@ URL: https://proxy.opinion.trade:8443/openapi/orders?apikey={KEY}
 TLS Fingerprinting (CRITICAL):
 Kong API Gateway uses JA3 TLS fingerprinting, blocking standard HTTP clients (reqwest, hyper, etc.) for ALL endpoints.
 
-**Solution**: Use `curl` subprocess for ALL API endpoints (GET, POST, DELETE)
-- Implementation: All methods in `unified_client.rs` use `std::process::Command` to spawn curl
-- Performance: ~10-50ms overhead per request (acceptable for market data)
-- Why curl works: System has TUN proxy (utun4: 28.0.0.1) that automatically routes curl traffic through VPN
+**Solution**: Pure `rrequest` library with Chrome120 TLS emulation
+- Implementation: `unified_client.rs` uses `rrequest` crate with `Emulation::Chrome120`
+- Environment-aware proxy configuration:
+  - **Local Development** (`OPINION_ENV=local`): Routes through proxy (`OPINION_PROXY_URL`) to bypass TLS fingerprinting
+  - **AWS Tokyo** (`OPINION_ENV=aws` or unset): Direct connection (no TLS blocking in cloud environment)
+- Performance: Native async performance with tokio, no subprocess overhead, connection pooling, HTTP/2 support
 
-**Note**: Previous attempts with `rquest` crate failed. curl subprocess is the only reliable solution.
+**Configuration**:
+- `src/config.rs::Environment` enum defines environment detection
+- Default: AWS (production-safe)
+- Chrome120 TLS emulation applied in both environments
 
 Test Requirements:
 - [ ] GET requests work
@@ -564,7 +569,9 @@ Test Requirements:
 - [ ] API key in query params
 - [ ] Timeout handling
 - [ ] Retry on 5xx
-- [ ] TLS fingerprinting bypass works for protected endpoints
+- [ ] Chrome120 TLS emulation bypasses Kong Gateway JA3 fingerprinting
+- [ ] Environment detection works correctly (local vs AWS)
+- [ ] Proxy configuration works in local environment
 ---
 5.6 Chain Client (src/chain/)
 Contract: ConditionalTokens (ERC-1155)

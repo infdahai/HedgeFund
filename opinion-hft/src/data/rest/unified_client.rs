@@ -7,7 +7,7 @@ use rquest_util::Emulation;
 use crate::config::{ApiConfig, Environment};
 use crate::error::{Error, Result};
 use super::models::{
-    OpinionResponse, MarketListResult, ApiMarket, TokenOrderbook, LatestPrice,
+    OpinionResponse, MarketListResult, MarketDetailResult, ApiMarket, TokenOrderbook, LatestPrice,
     OrderListResult, UserOrder, QuoteTokenInfo, QuoteTokenList, UserAuthInfo
 };
 
@@ -163,6 +163,10 @@ impl OpinionClient {
     }
 
     pub async fn get_markets_with_params(&self, status: Option<&str>, limit: Option<u32>) -> Result<Vec<ApiMarket>> {
+        self.get_markets_with_pagination(status, limit, None).await
+    }
+
+    pub async fn get_markets_with_pagination(&self, status: Option<&str>, limit: Option<u32>, page: Option<u32>) -> Result<Vec<ApiMarket>> {
         let mut endpoint = "market".to_string();
         let mut params = vec![];
         if let Some(s) = status {
@@ -171,11 +175,24 @@ impl OpinionClient {
         if let Some(l) = limit {
             params.push(format!("limit={}", l));
         }
+        if let Some(p) = page {
+            params.push(format!("page={}", p));
+        }
         if !params.is_empty() {
             endpoint = format!("{}?{}", endpoint, params.join("&"));
         }
         let response: OpinionResponse<MarketListResult> = self.get(&endpoint).await?;
         response.into_result().map(|r| r.list)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
+    }
+
+    pub async fn get_market_detail(&self, market_id: i64) -> Result<ApiMarket> {
+        // NOTE: Market detail endpoint uses path parameter, not query parameter
+        // URL: /openapi/market/{marketId}
+        let endpoint = format!("market/{}", market_id);
+        let response: OpinionResponse<MarketDetailResult> = self.get(&endpoint).await?;
+        response.into_result()
+            .map(|r| r.data)
             .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 

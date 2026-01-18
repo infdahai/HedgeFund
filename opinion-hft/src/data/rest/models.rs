@@ -103,6 +103,11 @@ pub struct MarketListResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDetailResult {
+    pub data: ApiMarket,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiMarket {
     pub market_id: i64,

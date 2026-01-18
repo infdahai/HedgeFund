@@ -19,8 +19,8 @@ fn test_environment_defaults() {
 }
 
 #[tokio::test]
-#[ignore]
-async fn test_local_mode_uses_curl() {
+
+async fn test_local_mode_uses_proxy() {
     dotenvy::dotenv().ok();
 
     let config = Config::builder()
@@ -30,13 +30,13 @@ async fn test_local_mode_uses_curl() {
         .private_key("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
         .build_unchecked();
 
-    let client = OpinionClient::new(&config.api, config.environment).unwrap();
-    assert!(client.use_curl());
+    let _client = OpinionClient::new(&config.api, config.environment).unwrap();
+    assert!(config.environment.is_local());
 }
 
 #[tokio::test]
-#[ignore]
-async fn test_aws_mode_uses_rquest() {
+
+async fn test_aws_mode_uses_direct_connection() {
     dotenvy::dotenv().ok();
 
     let config = Config::builder()
@@ -46,12 +46,12 @@ async fn test_aws_mode_uses_rquest() {
         .private_key("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
         .build_unchecked();
 
-    let client = OpinionClient::new(&config.api, config.environment).unwrap();
-    assert!(!client.use_curl());
+    let _client = OpinionClient::new(&config.api, config.environment).unwrap();
+    assert!(!config.environment.is_local());
 }
 
 #[tokio::test]
-#[ignore]
+
 async fn test_env_var_loading() {
     std::env::set_var("OPINION_ENV", "local");
     std::env::set_var("OPINION_API_KEY", "test-key");

@@ -18,6 +18,7 @@ pub enum WsEvent {
     OrderUpdate(OrderUpdate),
     TradeRecord(TradeRecord),
     MarketData { pair: String, data: String },
+    MarketTrade { pair: String, data: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -192,6 +193,13 @@ impl WebSocketClient {
                     data: msg.data?.to_string(),
                 })
             }
+            Some(channel) if channel.starts_with("market.trade.") => {
+                let pair = channel.strip_prefix("market.trade.")?.to_string();
+                Some(WsEvent::MarketTrade {
+                    pair,
+                    data: msg.data?.to_string(),
+                })
+            }
             _ => None,
         }
     }
@@ -273,6 +281,13 @@ mod tests {
         let json = r#"{"channel":"market.data.BTC-YES","data":{"bids":[],"asks":[]}}"#;
         let event = WebSocketClient::parse_message(json);
         assert!(matches!(event, Some(WsEvent::MarketData { pair, .. }) if pair == "BTC-YES"));
+    }
+
+    #[test]
+    fn test_parse_market_trade() {
+        let json = r#"{"channel":"market.trade.BTC-YES","data":{"price":"0.5","amount":"100"}}"#;
+        let event = WebSocketClient::parse_message(json);
+        assert!(matches!(event, Some(WsEvent::MarketTrade { pair, .. }) if pair == "BTC-YES"));
     }
 
     #[test]

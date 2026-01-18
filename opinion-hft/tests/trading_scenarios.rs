@@ -17,7 +17,7 @@ fn load_test_config() -> Config {
 
 /// Test: Fetch quote tokens and exchange address
 #[tokio::test]
-#[ignore]
+
 async fn test_fetch_quote_tokens() {
     let config = load_test_config();
     let client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
@@ -38,10 +38,10 @@ async fn test_fetch_quote_tokens() {
 
 /// Test: Get user authentication info and proxy address
 #[tokio::test]
-#[ignore]
+
 async fn test_fetch_user_auth() {
     let config = load_test_config();
-    let client = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
+    let client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
 
     let auth = client.get_user_auth().await.expect("Failed to get user auth");
     
@@ -60,10 +60,10 @@ async fn test_fetch_user_auth() {
 
 /// Test: Fetch active markets
 #[tokio::test]
-#[ignore]
+
 async fn test_fetch_active_markets() {
     let config = load_test_config();
-    let client = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
+    let client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
 
     let markets = client.get_markets_with_params(Some("activated"), Some(5))
         .await
@@ -83,10 +83,10 @@ async fn test_fetch_active_markets() {
 
 /// Test: Fetch orderbook for a token
 #[tokio::test]
-#[ignore]
+
 async fn test_fetch_orderbook() {
     let config = load_test_config();
-    let client = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
+    let client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
 
     // First get an active market
     let markets = client.get_markets_with_params(Some("activated"), Some(1))
@@ -124,10 +124,10 @@ async fn test_fetch_orderbook() {
 
 /// Test: EIP-712 signature generation
 #[tokio::test]
-#[ignore]
+
 async fn test_eip712_signing() {
     let config = load_test_config();
-    let impersonate = OpinionClient::new(&config.api).expect("Failed to create client");
+    let impersonate = OpinionClient::new(&config.api, config.environment).expect("Failed to create client");
     
     // Get exchange address for verifying contract
     let exchange_addr = impersonate.get_exchange_address(56, "0x55d398326f99059fF775485246999027B3197955")
@@ -167,11 +167,11 @@ async fn test_eip712_signing() {
 
 /// Test: Full order placement flow (uses deep price to avoid fills)
 #[tokio::test]
-#[ignore]
+
 async fn test_place_limit_order() {
     let config = load_test_config();
-    let rest_client = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
-    let impersonate = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
+    let rest_client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
+    let impersonate = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
 
     // 1. Get active market
     let markets = rest_client.get_markets_with_params(Some("activated"), Some(1))
@@ -295,7 +295,7 @@ async fn test_place_limit_order() {
 
 /// Test: Cancel order (requires an existing order)
 #[tokio::test]
-#[ignore]
+
 async fn test_cancel_order() {
     // This test would require placing an order first, then cancelling it
     // Skipped for now as it requires more complex state management
@@ -304,10 +304,10 @@ async fn test_cancel_order() {
 
 /// Test: Get user positions
 #[tokio::test]
-#[ignore]
+
 async fn test_get_positions() {
     let config = load_test_config();
-    let rest_client = OpinionClient::new(&config.api).expect("Failed to create OpinionClient");
+    let rest_client = OpinionClient::new(&config.api, config.environment).expect("Failed to create OpinionClient");
     
     // Get positions endpoint (if available)
     // Note: This depends on the actual API endpoint structure

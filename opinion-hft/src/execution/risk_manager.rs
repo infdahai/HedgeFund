@@ -7,11 +7,11 @@
 //! - Stop-loss protection for arbitrage trades
 //! - Position and exposure limits
 
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use crate::error::{Error, Result};
-use crate::data::rest::OpinionClient;
 use crate::config::RiskConfig;
+use crate::data::rest::OpinionClient;
+use crate::error::{Error, Result};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// Trade execution record for P&L tracking
 #[derive(Debug, Clone)]
@@ -101,10 +101,7 @@ impl RiskManager {
         if current_position + order_size > self.config.max_position_per_market {
             return Err(Error::RiskLimitExceeded(format!(
                 "Position limit exceeded for {}: {:.2} + {:.2} > {:.2}",
-                market_id,
-                current_position,
-                order_size,
-                self.config.max_position_per_market
+                market_id, current_position, order_size, self.config.max_position_per_market
             )));
         }
 
@@ -113,9 +110,7 @@ impl RiskManager {
         if total_exposure + order_size > self.config.max_total_exposure {
             return Err(Error::RiskLimitExceeded(format!(
                 "Total exposure limit exceeded: {:.2} + {:.2} > {:.2}",
-                total_exposure,
-                order_size,
-                self.config.max_total_exposure
+                total_exposure, order_size, self.config.max_total_exposure
             )));
         }
 
@@ -131,36 +126,32 @@ impl RiskManager {
         Ok(())
     }
 
-    /// Record trade result and check for stop-loss triggers
-    pub fn record_trade(&mut self, record: TradeRecord) -> Result<()> {
+
+
+    /// Record trade result and check for stop-loss triggers.
+    /// This serves as the post-trade validation step.
+    pub fn validate_post_trade(&mut self, record: TradeRecord) -> Result<()> {
         let slippage = if record.expected_price > 0.0 {
             (record.actual_price - record.expected_price).abs() / record.expected_price
         } else {
             0.0
         };
 
-        // Update P&L
         self.daily_pnl += record.actual_pnl;
         self.current_equity += record.actual_pnl;
 
-        // Update peak equity
         if self.current_equity > self.peak_equity {
             self.peak_equity = self.current_equity;
         }
 
-        // Track consecutive losses
         if record.actual_pnl < 0.0 {
             self.consecutive_losses += 1;
         } else {
             self.consecutive_losses = 0;
         }
 
-        // Store trade record
         self.trade_history.push(record.clone());
 
-        // Check stop-loss conditions
-        
-        // 1. Slippage exceeded
         if slippage > self.config.max_slippage_pct {
             tracing::warn!(
                 "Slippage exceeded: {:.2}% > {:.2}% on trade {}",
@@ -170,7 +161,6 @@ impl RiskManager {
             );
         }
 
-        // 2. Execution time exceeded
         if record.execution_time_ms > self.config.max_execution_time_ms {
             tracing::warn!(
                 "Execution time exceeded: {}ms > {}ms on trade {}",
@@ -180,7 +170,6 @@ impl RiskManager {
             );
         }
 
-        // 3. Expected profit but actual loss (arbitrage failure)
         if record.expected_profit > 0.0 && record.actual_pnl < 0.0 {
             tracing::error!(
                 "ARBITRAGE FAILURE: Expected +{:.4} but got {:.4} on trade {}",
@@ -189,7 +178,6 @@ impl RiskManager {
                 record.trade_id
             );
 
-            // After 3 consecutive arbitrage failures, halt
             if self.consecutive_losses >= 3 {
                 self.is_halted = true;
                 return Err(Error::SystemHalted(format!(
@@ -199,7 +187,6 @@ impl RiskManager {
             }
         }
 
-        // 4. Daily loss limit
         if self.daily_pnl <= -self.config.max_daily_loss {
             self.is_halted = true;
             return Err(Error::SystemHalted(format!(
@@ -208,7 +195,6 @@ impl RiskManager {
             )));
         }
 
-        // 5. Drawdown limit
         if self.peak_equity > 0.0 {
             let drawdown = (self.peak_equity - self.current_equity) / self.peak_equity;
             if drawdown > self.config.max_drawdown_pct {
@@ -272,7 +258,9 @@ impl RiskManager {
     pub async fn check_health(&mut self) -> Result<()> {
         // 1. Check if we are already halted
         if self.is_halted {
-            return Err(Error::SystemHalted("RiskManager halted system due to previous errors".into()));
+            return Err(Error::SystemHalted(
+                "RiskManager halted system due to previous errors".into(),
+            ));
         }
 
         // 2. Measure vital statistics
@@ -280,13 +268,13 @@ impl RiskManager {
             Ok((latency, drift)) => {
                 // Reset error counter on successful check
                 self.consecutive_errors = 0;
-                
+
                 // 3. Validate against thresholds
-                
+
                 // Check Latency
                 if latency > self.config.max_api_latency {
                     return Err(Error::RiskLimitExceeded(format!(
-                        "API Latency too high: {:?} > {:?}", 
+                        "API Latency too high: {:?} > {:?}",
                         latency, self.config.max_api_latency
                     )));
                 }
@@ -294,7 +282,7 @@ impl RiskManager {
                 // Check Drift
                 if drift > self.config.max_clock_drift {
                     return Err(Error::RiskLimitExceeded(format!(
-                        "Clock drift too high: {:?} > {:?}", 
+                        "Clock drift too high: {:?} > {:?}",
                         drift, self.config.max_clock_drift
                     )));
                 }
@@ -304,16 +292,16 @@ impl RiskManager {
             Err(e) => {
                 // 4. Handle Check Failures
                 self.consecutive_errors += 1;
-                
+
                 // Trip circuit breaker if errors exceed threshold
                 if self.consecutive_errors >= self.config.max_consecutive_errors {
                     self.is_halted = true;
                     return Err(Error::SystemHalted(format!(
-                        "System halted after {} consecutive health check failures. Last error: {}", 
+                        "System halted after {} consecutive health check failures. Last error: {}",
                         self.consecutive_errors, e
                     )));
                 }
-                
+
                 // Return the underlying error but don't halt yet
                 Err(e)
             }
@@ -324,17 +312,19 @@ impl RiskManager {
     /// Opinion API doesn't have a dedicated time endpoint, so we use a lightweight call.
     async fn measure_latency_and_drift(&self) -> Result<(Duration, Duration)> {
         let start = Instant::now();
-        
+
         // Use a lightweight endpoint to check connectivity
         // Using market list with limit=1 as a ping
-        self.rest_client.get::<serde_json::Value>("market?limit=1").await?;
-        
+        self.rest_client
+            .get::<serde_json::Value>("market?limit=1")
+            .await?;
+
         let latency = start.elapsed();
-        
+
         // Without an explicit server-time field in response, drift is hard to calculate precisely.
         // We'll assume drift is 0 for now unless we parse Date headers.
         // TODO: Parse 'Date' HTTP header for coarse sync check.
-        let drift = Duration::from_secs(0); 
+        let drift = Duration::from_secs(0);
 
         Ok((latency, drift))
     }

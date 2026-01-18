@@ -152,7 +152,7 @@ impl OrderGateway {
                             timestamp: std::time::Instant::now(),
                         };
 
-                        if let Err(e) = self.risk_manager.lock().await.record_trade(trade_record) {
+                        if let Err(e) = self.risk_manager.lock().await.validate_post_trade(trade_record) {
                             error!("Risk manager rejected trade record: {}", e);
                         }
 

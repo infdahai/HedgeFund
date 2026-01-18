@@ -8,7 +8,8 @@ High-frequency trading bot for Opinion.trade prediction markets on BNB Chain (56
 cd opinion-hft
 cargo check              # Type check
 cargo clippy             # Lint (0 warnings required)
-cargo test --lib         # Run 63 unit tests
+cargo test --lib         # Run 64 unit tests
+cargo test -- --ignored  # Run live integration tests
 cargo run                # Start bot
 ```
 
@@ -22,18 +23,19 @@ cargo run                # Start bot
 | Side Values | `0` (Buy) / `1` (Sell) as strings | "BUY"/"SELL" |
 | Price Precision | 3 decimals (0.001-0.999) | 2 decimals |
 | Minimum Order | 1.30 USDT | - |
+| Market Detail | `/market/{id}` path param, `data` wrapper | `/market/detail?marketId={id}` |
 
 ## TLS Fingerprinting & HTTP Client
-Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rrequest** with Chrome120 TLS emulation:
+Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rquest** with Chrome120 TLS emulation.
 
 **Environments:**
-- **Local dev**: `OPINION_ENV=local` + `OPINION_PROXY_URL=http://127.0.0.1:7890` (rrequest with proxy)
-- **AWS Tokyo**: `OPINION_ENV=aws` or unset (rrequest direct connection, no proxy)
+- **Local dev**: `OPINION_ENV=local` + `OPINION_PROXY_URL=http://127.0.0.1:7890` (rquest with proxy)
+- **AWS Tokyo**: `OPINION_ENV=aws` or unset (rquest direct connection, no proxy)
 - **Default**: AWS (production-safe)
 
 **Configuration:**
 - `src/config.rs::Environment` enum defines environments
-- `src/data/rest/unified_client.rs` implements pure rrequest client
+- `src/data/rest/unified_client.rs` implements pure rquest client
 - Local: Routes through proxy to bypass Kong's TLS fingerprinting
 - AWS: Direct connection (no TLS blocking in cloud environment)
 - Chrome120 TLS emulation applied in both environments
@@ -42,6 +44,8 @@ Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rrequest** wit
 - No subprocess overhead (unlike curl)
 - Native async performance with tokio
 - Connection pooling and HTTP/2 support
+
+See [Architecture Design](./opinion-hft/docs/DESIGN.md) for detailed system diagrams.
 
 ## ChainClient RPC Retry
 `ChainClient` automatically retries failed RPC calls (up to 3 attempts) with exponential backoff.
@@ -64,14 +68,7 @@ Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rrequest** wit
 - **Domain Name**: `"OPINION CTF Exchange"` (note the space!)
 - **Amounts**: Wei strings (18 decimals)
 
-## Architecture
-```
-Data Plane (I/O)          → Execution Plane (Logic)
-├── WebSocketClient       ├── OrderGateway
-├── OpinionClient (REST)  ├── RateLimiter (15 TPS)
-└── ChainClient (Alloy)   ├── ConfirmationTracker
-                          └── RiskManager
-```
+
 
 ## Confirmation Flow
 1. Submit order → REST API
@@ -81,13 +78,15 @@ Data Plane (I/O)          → Execution Plane (Logic)
 
 ## Risk Management
 - Pre-trade: Position limits, exposure limits, profit threshold
-- Post-trade: Slippage check, P&L tracking
+- **Post-trade validation**: Slippage check, P&L tracking, execution time validation
 - Circuit breaker: Halts after 3 consecutive losses or daily loss limit
 - Drawdown protection: Stops if drawdown > 10%
 
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-18 | Implemented post-trade validation in RiskManager (slippage, execution time, P&L tracking, circuit breaker) |
+| 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
 | 2026-01-18 | Removed all curl subprocess, implemented pure rrequest client with environment detection (local=proxy, aws=direct), ChainClient retry mechanism |
 | 2026-01-18 | Extended curl to ALL endpoints (temporary workaround for 403 Forbidden errors) |
 | 2026-01-17 | OpinionClient caching, RiskManager enhanced |
