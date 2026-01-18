@@ -271,7 +271,7 @@ ORDER_TYPES = {
 
 #### Price Precision
 
-⚠️ Price has **3 decimal places**: `0.001` - `0.999`. **NOT** 2 decimals like some other platforms!
+⚠️ Price has **1 decimal place**: `0.1` - `0.9`. **NOT** 2 or 3 decimals like some other platforms!
 
 ### 2.3 BNB Chain RPC Latency Research
 
@@ -371,7 +371,7 @@ From user conversations about Opinion Trade:
 | Limit | Value |
 | --- | --- |
 | Rate Limit | 15 TPS (default) |
-| Price Precision | 3 decimals (0.001 - 0.999) |
+| Price Precision | 1 decimal (0.1 - 0.9) |
 
 ### 3.5 EIP-712 Constants
 
@@ -390,7 +390,7 @@ const ORDER_TYPEHASH: &str = "Order(uint256 salt,address maker,address signer,ad
 ### 3.6 DO NOT List
 
 * ❌ **DO NOT** use Header for API key - MUST use query parameter.
-* ❌ **DO NOT** assume 2 decimal price - MUST use 3 decimals.
+* ❌ **DO NOT** assume 2 or 3 decimal price - MUST use 1 decimal.
 * ❌ **DO NOT** use `ethers-rs` - Use Alloy (10x faster).
 * ❌ **DO NOT** block async I/O - CLAUDE.md rules require non-blocking.
 * ❌ **DO NOT** exceed 15 TPS - API will reject.
@@ -1279,7 +1279,7 @@ The bot uses `Fraction` from `num-traits` for precise decimal arithmetic:
 use num_traits::Float;
 
 // Convert price to wei
-let price_fraction = Fraction::new(price * 1_000, 1_000); // 3 decimals
+let price_fraction = Fraction::new(price * 10, 10); // 1 decimal
 let maker_amount = (price_fraction * U256::from(quantity)).to_u256().unwrap();
 let taker_amount = U256::from(quantity) - maker_amount;
 ```
@@ -1620,7 +1620,7 @@ Copy and paste the following block to start a new implementation session:
 > * **WebSocket**: `wss://ws.opinion.trade`
 > * **API Key**: Query parameter (NOT header!) `?apikey={KEY}`
 > * **Rate Limit**: 15 TPS
-> * **Price Precision**: 3 decimals (0.001 - 0.999)
+> * **Price Precision**: 1 decimal (0.1 - 0.9)
 > 
 > 
 > ## Critical Design Decision
