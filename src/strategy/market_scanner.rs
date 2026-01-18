@@ -69,8 +69,7 @@ impl MarketScanner {
     }
 
     pub async fn fetch_all_markets(&mut self) -> Result<Vec<MarketInfo>> {
-        // Use the typed client method
-        let api_markets = self.rest_client.get_markets().await?;
+        let api_markets = self.rest_client.get_markets_with_params(Some("activated"), None).await?;
 
         let markets: Vec<MarketInfo> = api_markets.into_iter()
             .map(|m| self.convert_market(m))

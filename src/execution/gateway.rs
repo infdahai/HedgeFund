@@ -131,7 +131,7 @@ impl OrderGateway {
                     }
                 }
 
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
                     if let Err(e) = self.risk_manager.lock().await.check_health().await {
                         error!("Risk check failed: {}", e);
                     }
@@ -379,8 +379,8 @@ impl OrderGateway {
                             crate::types::order::OrderSide::Sell => prev_leg.price * 0.95, 
                         };
                         
-                        // Round price to 1 decimal place to meet API reqs
                         let rollback_price = (rollback_price * 10.0).round() / 10.0;
+                        let rollback_price = rollback_price.max(0.1).min(0.9);
 
                         let rollback_intent = OrderIntent::new(
                             opportunity.market_id.clone(),

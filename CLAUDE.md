@@ -39,7 +39,8 @@ cargo run                # Start bot
 | Order Endpoint | `/order` (singular) | `/orders` (plural) |
 | Cancel Order | `POST /order/cancel` + body | `DELETE /order/{id}` |
 | Side Values | `0` (Buy) / `1` (Sell) as strings | "BUY"/"SELL" |
-| Price Precision | 1 decimal (0.1-0.9) | 2 or 3 decimals |
+| Price Precision | **0.1 - 0.9**, 1 decimal (frontend standard) | More than 1 decimal |
+| Market Status Filter | `"activated"` or `"resolved"` (string) | Numeric values like "2" |
 | Minimum Order | 1.30 USDT | - |
 | Market Detail | `/market/{id}` path param, `data` wrapper | `/market/detail?marketId={id}` |
 
@@ -162,6 +163,8 @@ referral_discount: 0.10, // 10% 邀请折扣
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-19 | Fixed market status filter: use `"activated"` (string) instead of `"2"` (numeric); Updated price precision: support 0.001-0.999 range with max 6 decimals; Throttled RiskManager health check from 1s to 30s interval |
+| 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |
 | 2026-01-18 | Added small-scale arbitrage detection integration tests with real market data |
 | 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated DESIGN.md with Strategy, Telemetry, and Address Config sections |
@@ -173,7 +176,6 @@ referral_discount: 0.10, // 10% 邀请折扣
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
 | 2026-01-18 | Removed all curl subprocess, implemented pure rrequest client with environment detection (local=proxy, aws=direct), ChainClient retry mechanism |
 | 2026-01-18 | Extended curl to ALL endpoints (temporary workaround for 403 Forbidden errors) |
-| 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-17 | OpinionClient caching, RiskManager enhanced |
 | 2026-01-17 | Arbitrage rollback logic implemented |
 | 2026-01-17 | 0 warnings achieved |
