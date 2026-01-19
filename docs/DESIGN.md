@@ -727,6 +727,65 @@ Kong API Gateway uses JA3 TLS fingerprinting.
 
 **Retry Mechanism:** Exponential backoff (1s, 2s, 4s) for retriable errors (timeout, 503, 429).
 
+### 5.6.1 RPC Failover Architecture
+
+The `ChainClient` now supports automatic failover between primary and fallback RPC endpoints.
+
+#### Configuration
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `OPINION_RPC_URL_PRIMARY` | Primary RPC endpoint (NodeReal/QuickNode) | Falls back to `BSC_RPC_URL` |
+| `OPINION_RPC_URL_FALLBACK` | Fallback RPC endpoint (public node) | None |
+| `OPINION_BATCH_BUFFER_MS` | Batch query buffer window | 50ms |
+| `OPINION_HEALTH_CHECK_INTERVAL` | Health check interval | 30s |
+
+#### Failover Logic
+
+```text
+┌─────────────────┐
+│ RPC Request     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     healthy?     ┌─────────────────┐
+│ Primary RPC     │────────YES──────▶│ Execute Request │
+│ (NodeReal)      │                  └────────┬────────┘
+└────────┬────────┘                           │
+         │NO                                  ▼
+         ▼                           ┌─────────────────┐
+┌─────────────────┐                  │ Success?        │
+│ Fallback RPC    │◀─────YES─────────┤                 │
+│ (BSC Public)    │                  └────────┬────────┘
+└────────┬────────┘                           │NO
+         │                                    ▼
+         ▼                           ┌─────────────────┐
+┌─────────────────┐                  │ Retry (3x)      │
+│ Execute Request │                  │ Exponential     │
+└─────────────────┘                  │ Backoff         │
+                                     └─────────────────┘
+```
+
+#### Health Check
+
+- **Trigger**: When primary is marked unhealthy AND health check interval elapsed
+- **Method**: Call `get_chain_id()` on primary provider
+- **Recovery**: If chain ID matches 56 (BNB Chain), mark primary as healthy
+
+#### Batch Query Optimization
+
+The `ConfirmationTracker` now buffers balance queries:
+
+1. When order finishes (WebSocket `status=Finish`), add to buffer
+2. Wait up to 50ms OR until 10 orders accumulated
+3. Call `balanceOfBatch` once for all pending orders
+4. Process results and emit `ConfirmedOrder` events
+
+**RPC Call Reduction**: 
+- Before: 5 orders = 5 RPC calls
+- After: 5 orders within 50ms = 1 RPC call
+- Improvement: ~80% reduction in RPC calls during high activity
+
 ### 5.7 Confirmation Tracker (`src/execution/confirmation.rs`)
 
 **Flow:**
@@ -897,6 +956,22 @@ let detector = ArbitrageDetector::new(config);
 **Testing:**
 
 See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
+
+### 5.9.5 Replay Engine (Offline)
+
+**Purpose:** Validate strategy metrics and risk manager behavior using JSONL replay data without live API dependency.
+
+**Core Types:**
+- `ReplayTestClient` (JSONL playback)
+- `ReplayEvent` (`init`, `trade`)
+- `ReplayTrade` (price, quantity, fee)
+
+**Usage Pattern:**
+- Load JSONL via `ReplayTestClient::new_from_jsonl`
+- Execute replay events to compute P&L, win rate, drawdown
+
+**Tests:**
+- `tests/live_order_tests.rs`: `test_sim_replay_metrics`, `test_sim_replay_metrics_profit`, `test_sim_replay_metrics_loss`, `test_sim_replay_risk_manager`
 
 ### 5.10 Telemetry Module (`src/telemetry.rs`)
 
@@ -1512,6 +1587,7 @@ tracing = "0.1"
 ### 9.2 Acceptance Criteria
 
 * ✅ Unit test coverage > 80%
+* ✅ Replay tests pass (`test_sim_replay_*`)
 * ✅ All integration tests pass
 * ✅ No compiler warnings
 * ✅ `clippy` passes with no warnings
@@ -1526,6 +1602,51 @@ tracing = "0.1"
 3. **Phase 3: External Communication** (REST Client, WebSocket Client, Chain Client)
 4. **Phase 4: Integration** (Confirmation Tracker, Gateway, Integration Tests)
 5. **Phase 5: Examples & Docs**
+
+---
+
+## 11.1 Opinion Trade Strategy Iteration Roadmap (SQLite-first)
+
+Phase 0: Data Collector (no trading)
+
+Initialize SQLite (WAL) and record snapshots + confirmations.
+Capture orderbook snapshots for YES/NO pairs with depth limit.
+Persist confirmed orders for offline analysis.
+
+SQLite schema (current)
+
+`orderbook_snapshots` (market_id, pair, snapshot_ts, captured_at_ms)
+`orderbook_levels` (snapshot_id, side, price, size, level)
+`confirmed_orders` (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
+
+Env flags
+
+`OPINION_DATA_ENABLED` (default true)
+`OPINION_DATA_DB_PATH` (default data/opinion-hft.sqlite)
+`OPINION_DATA_WAL` (default true)
+`OPINION_DATA_BATCH_SIZE` (default 200)
+`OPINION_DATA_FLUSH_MS` (default 1000)
+`OPINION_DATA_OB_DEPTH` (default 10)
+`OPINION_DATA_QUEUE_CAP` (default 2000)
+
+Phase 1: Offline Analysis
+
+Run SQL/Pandas analysis to derive rulebook thresholds (spread, liquidity, fee-adjusted EV).
+Produce an aggregated strategy taxonomy (no user-level profiling).
+
+Phase 2: Backtest & Live Iteration
+
+Replay from SQLite snapshots (or export to JSONL if needed) using ReplayTestClient.
+Promote best-performing configs to `config.toml` and iterate.
+
+Opinion Trade-specific strategy additions
+
+Mint-Sell arbitrage: execute when sum(bids) > 1.0 after fees.
+Neg-Risk arbitrage: buy all outcomes when sum(asks) < 1.0 after fees.
+
+Risk guardrail addition
+
+Max holding time: force exit if a position remains open beyond X minutes.
 
 ---
 

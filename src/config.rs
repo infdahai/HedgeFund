@@ -3,11 +3,11 @@
 //! Contains all configurable parameters with sensible defaults based on
 //! the Opinion Trade API specifications.
 
-use std::time::Duration;
 use std::str::FromStr;
+use std::time::Duration;
 
+use crate::auth::secret::{PrivateKey, SecretLoader, SecretString};
 use crate::error::{Error, Result};
-use crate::auth::secret::{SecretLoader, PrivateKey, SecretString};
 
 // ============ Critical Constants (DO NOT MODIFY) ============
 
@@ -69,6 +69,8 @@ pub struct Config {
 
     /// Execution environment (local/aws)
     pub environment: Environment,
+
+    pub data: DataCollectionConfig,
 }
 
 /// Risk management configuration.
@@ -96,6 +98,80 @@ pub struct RiskConfig {
     pub max_position_per_market: f64,
     /// Maximum total exposure (in USDT)
     pub max_total_exposure: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DataCollectionConfig {
+    pub enabled: bool,
+    pub db_path: String,
+    pub wal: bool,
+    pub batch_size: usize,
+    pub flush_interval_ms: u64,
+    pub orderbook_depth: usize,
+    pub queue_capacity: usize,
+}
+
+impl DataCollectionConfig {
+    pub fn from_env() -> Self {
+        let enabled = std::env::var("OPINION_DATA_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        let db_path = std::env::var("OPINION_DATA_DB_PATH")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| "data/opinion-hft.sqlite".to_string());
+
+        let wal = std::env::var("OPINION_DATA_WAL")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        let batch_size = std::env::var("OPINION_DATA_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(200);
+
+        let flush_interval_ms = std::env::var("OPINION_DATA_FLUSH_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1000);
+
+        let orderbook_depth = std::env::var("OPINION_DATA_OB_DEPTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(10);
+
+        let queue_capacity = std::env::var("OPINION_DATA_QUEUE_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2000);
+
+        Self {
+            enabled,
+            db_path,
+            wal,
+            batch_size,
+            flush_interval_ms,
+            orderbook_depth,
+            queue_capacity,
+        }
+    }
+}
+
+impl Default for DataCollectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            db_path: "data/opinion-hft.sqlite".to_string(),
+            wal: true,
+            batch_size: 200,
+            flush_interval_ms: 1000,
+            orderbook_depth: 10,
+            queue_capacity: 2000,
+        }
+    }
 }
 
 impl RiskConfig {
@@ -156,8 +232,14 @@ pub struct ApiConfig {
 /// Chain/RPC configuration.
 #[derive(Debug, Clone)]
 pub struct ChainConfig {
-    /// RPC endpoint URL
+    /// RPC endpoint URL (legacy, kept for backward compatibility)
     pub rpc_url: String,
+
+    /// Primary RPC endpoint URL (main node)
+    pub primary_rpc_url: Option<String>,
+
+    /// Fallback RPC endpoint URL (backup node)
+    pub fallback_rpc_url: Option<String>,
 
     /// Chain ID (should be 56 for BNB Chain)
     pub chain_id: u64,
@@ -173,6 +255,12 @@ pub struct ChainConfig {
 
     /// RPC request timeout
     pub rpc_timeout: Duration,
+
+    /// Batch request buffer window in milliseconds (for batching balanceOf calls)
+    pub batch_buffer_ms: u64,
+
+    /// Health check interval for RPC endpoint monitoring
+    pub health_check_interval: Duration,
 }
 
 /// Execution-related configuration.
@@ -297,11 +385,15 @@ impl Default for ChainConfig {
     fn default() -> Self {
         Self {
             rpc_url: String::new(),
+            primary_rpc_url: None,
+            fallback_rpc_url: None,
             chain_id: CHAIN_ID,
             private_key: PrivateKey::default(),
             eoa_address: String::new(),
             conditional_tokens_address: CONDITIONAL_TOKENS_ADDRESS.to_string(),
             rpc_timeout: Duration::from_secs(5),
+            batch_buffer_ms: 50,
+            health_check_interval: Duration::from_secs(30),
         }
     }
 }
@@ -404,11 +496,31 @@ impl Config {
             field: "OPINION_API_KEY".into(),
         })?;
 
-        let rpc_url = std::env::var("BSC_RPC_URL")
-            .unwrap_or_else(|_| "https://bsc-dataseed.binance.org".to_string());
+        // Primary RPC URL (if not set, fallback to BSC_RPC_URL for compatibility)
+        let primary_rpc = std::env::var("OPINION_RPC_URL_PRIMARY").ok();
+        let rpc_url = primary_rpc.clone().unwrap_or_else(|| {
+            std::env::var("BSC_RPC_URL")
+                .unwrap_or_else(|_| "https://bsc-dataseed.binance.org".to_string())
+        });
+
+        // Fallback RPC URL (optional)
+        let fallback_rpc = std::env::var("OPINION_RPC_URL_FALLBACK").ok();
+
+        // Batch buffer window (default: 50ms)
+        let batch_buffer_ms = std::env::var("OPINION_BATCH_BUFFER_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(50);
+
+        // Health check interval (default: 30s)
+        let health_check_interval_secs = std::env::var("OPINION_HEALTH_CHECK_INTERVAL")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);
 
         // Use SecretLoader to securely load private key
-        let private_key = SecretLoader::load_private_key().unwrap_or_else(|_| PrivateKey::default());
+        let private_key =
+            SecretLoader::load_private_key().unwrap_or_else(|_| PrivateKey::default());
 
         let eoa_address = std::env::var("OPINION_EOA_ADDRESS").unwrap_or_default();
 
@@ -425,55 +537,51 @@ impl Config {
             .and_then(|e| Environment::from_str(&e).ok())
             .unwrap_or_default();
 
+        let data_config = DataCollectionConfig::from_env();
+
         let mut builder = Config::builder()
             .api_key(api_key)
             .rpc_url(rpc_url)
             .websocket_url(ws_url)
             .rest_base_url(rest_url)
-            .environment(environment);
+            .environment(environment)
+            .data_collection(data_config);
 
         if !private_key.expose_secret().is_empty() {
-             // We can't use the builder method directly because it takes String
-             // and we already have a Secret. We'll set it directly on the builder's config object
-             // effectively bypassing the "String" requirement of the builder method for this specific case,
-             // or we'd have to expose it which defeats the purpose.
-             // Actually, ConfigBuilder::private_key takes String and wraps it.
-             // But we already have a Secret. 
-             // Best way: Just assign it directly if we modify builder to allow raw access or expose a secret setter.
-             // For simplicity in this diff, we expose it momentarily to pass to builder which re-wraps it.
-             // Ideally we add a `private_key_secret` method to builder.
-             builder.config.chain.private_key = private_key;
+            builder.config.chain.private_key = private_key;
         }
 
         if !eoa_address.is_empty() {
             builder = builder.eoa_address(eoa_address);
         }
 
+        // Set new RPC configuration fields
+        builder.config.chain.primary_rpc_url = primary_rpc;
+        builder.config.chain.fallback_rpc_url = fallback_rpc;
+        builder.config.chain.batch_buffer_ms = batch_buffer_ms;
+        builder.config.chain.health_check_interval =
+            Duration::from_secs(health_check_interval_secs);
+
         builder.build()
     }
 }
 
-/// Builder for constructing Config with validation.
 #[derive(Debug, Default)]
 pub struct ConfigBuilder {
     config: Config,
 }
 
 impl ConfigBuilder {
-    /// Set the API key.
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
         self.config.api.api_key = key.into();
         self
     }
 
-    /// Set the RPC URL.
     pub fn rpc_url(mut self, url: impl Into<String>) -> Self {
         self.config.chain.rpc_url = url.into();
         self
     }
 
-    /// Set the private key (hex encoded, with or without 0x prefix).
-    /// Automatically wraps in Secret for security.
     pub fn private_key(mut self, key: impl Into<String>) -> Self {
         let key = key.into();
         let cleaned = key.strip_prefix("0x").unwrap_or(&key).to_string();
@@ -481,43 +589,41 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set the confirmation mode.
     pub fn confirmation_mode(mut self, mode: ConfirmationMode) -> Self {
         self.config.confirmation.mode = mode;
         self
     }
 
-    /// Set the rate limit TPS.
     pub fn rate_limit_tps(mut self, tps: u32) -> Self {
         self.config.execution.rate_limit_tps = tps;
         self
     }
 
-    /// Set the API request timeout.
     pub fn api_timeout(mut self, timeout: Duration) -> Self {
         self.config.api.timeout = timeout;
         self
     }
 
-    /// Set the WebSocket URL.
     pub fn websocket_url(mut self, url: impl Into<String>) -> Self {
         self.config.websocket.url = url.into();
         self
     }
 
-    /// Set the REST API base URL.
     pub fn rest_base_url(mut self, url: impl Into<String>) -> Self {
         self.config.api.rest_base_url = url.into();
         self
     }
 
-    /// Build and validate the configuration.
+    pub fn data_collection(mut self, data: DataCollectionConfig) -> Self {
+        self.config.data = data;
+        self
+    }
+
     pub fn build(self) -> Result<Config> {
         self.config.validate()?;
         Ok(self.config)
     }
 
-    /// Build without validation (for testing).
     pub fn build_unchecked(self) -> Config {
         self.config
     }
