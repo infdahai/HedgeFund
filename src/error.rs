@@ -58,7 +58,6 @@ pub enum Error {
     #[error("WebSocket subscription failed for channel: {channel}")]
     SubscriptionError { channel: String },
 
-
     /// WebSocket disconnected unexpectedly
     #[error("WebSocket disconnected: {reason}")]
     WebSocketDisconnected { reason: String },
@@ -133,7 +132,6 @@ pub enum Error {
     #[error("System halted: {0}")]
     SystemHalted(String),
 }
-
 
 impl Error {
     /// Returns true if this error is retryable.

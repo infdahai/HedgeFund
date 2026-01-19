@@ -90,11 +90,11 @@ pub struct ArbitrageConfig {
 impl Default for ArbitrageConfig {
     fn default() -> Self {
         Self {
-            min_profit_rate: 0.005, // 0.5% minimum profit
-            min_liquidity: 100.0,   // Minimum 100 units
-            topic_fee_rate: 0.02,   // 2% max fee base
-            referral_discount: 0.10,// 10% rebate
-            max_slippage: 0.01,     // 1% max slippage
+            min_profit_rate: 0.005,  // 0.5% minimum profit
+            min_liquidity: 100.0,    // Minimum 100 units
+            topic_fee_rate: 0.02,    // 2% max fee base
+            referral_discount: 0.10, // 10% rebate
+            max_slippage: 0.01,      // 1% max slippage
         }
     }
 }
@@ -108,7 +108,7 @@ impl ArbitrageConfig {
         // At p=0.5, fee = topic_rate * 0.25
         // We apply discounts: (1 - referral_discount)
         let base_fee = self.topic_fee_rate * price * (1.0 - price);
-        
+
         // Opinion has a $0.50 minimum fee, but for rate calculation we use the curve first.
         // The actual fee cost check needs the amount, which we do in detection.
         base_fee * (1.0 - self.referral_discount)
@@ -148,7 +148,7 @@ impl ArbitrageDetector {
         let no_ask = no_orderbook.best_ask()?;
 
         let total_cost_unit = yes_ask + no_ask;
-        
+
         // No opportunity if cost >= 1.0
         if total_cost_unit >= 1.0 {
             return None;
@@ -168,18 +168,18 @@ impl ArbitrageDetector {
         // Fee = Rate * Notional. Notional = Price * Size.
         let yes_fee_rate = self.config.calculate_fee_rate(yes_ask);
         let no_fee_rate = self.config.calculate_fee_rate(no_ask);
-        
+
         let yes_cost = yes_ask * max_size;
         let no_cost = no_ask * max_size;
-        
+
         // Apply minimum fee floor ($0.50) floor per order
         // Assuming 1 unit = 1 USDT for simplicity in hft context
         let yes_fee = (yes_cost * yes_fee_rate).max(0.5);
         let no_fee = (no_cost * no_fee_rate).max(0.5);
-        
+
         let total_spend = yes_cost + no_cost + yes_fee + no_fee;
         let total_payout = 1.0 * max_size; // Winning side pays 1.0, losing pays 0.0. You hold both, so 1.0 * size.
-        
+
         let net_profit_abs = total_payout - total_spend;
         let net_profit_rate = net_profit_abs / total_spend;
 
@@ -244,7 +244,12 @@ impl ArbitrageDetector {
 
         for outcome in outcomes {
             let ask = outcome.orderbook.best_ask()?;
-            let liquidity = outcome.orderbook.asks.first().map(|a| a.size).unwrap_or(0.0);
+            let liquidity = outcome
+                .orderbook
+                .asks
+                .first()
+                .map(|a| a.size)
+                .unwrap_or(0.0);
 
             if liquidity < self.config.min_liquidity {
                 return None; // Insufficient liquidity in one leg
@@ -269,13 +274,16 @@ impl ArbitrageDetector {
         }
 
         let gross_profit = 1.0 - total_cost;
-        
+
         // Calculate fees for all legs based on their specific prices
-        let total_fees: f64 = legs.iter().map(|leg| {
-            let fee_rate = self.config.calculate_fee_rate(leg.price);
-            // Simplified for rate check: fee_cost = price * fee_rate
-            leg.price * fee_rate
-        }).sum();
+        let total_fees: f64 = legs
+            .iter()
+            .map(|leg| {
+                let fee_rate = self.config.calculate_fee_rate(leg.price);
+                // Simplified for rate check: fee_cost = price * fee_rate
+                leg.price * fee_rate
+            })
+            .sum();
 
         let net_profit = gross_profit - total_fees;
 
@@ -334,11 +342,11 @@ impl ArbitrageDetector {
 
         // Potential profit from placing orders inside the spread
         let spread_captured = ask_price - bid_price;
-        
+
         // Calculate fees for both legs
         let bid_fee = bid_price * self.config.calculate_fee_rate(bid_price);
         let ask_fee = ask_price * self.config.calculate_fee_rate(ask_price);
-        
+
         let net_profit = spread_captured - bid_fee - ask_fee;
 
         if net_profit < self.config.min_profit_rate {
@@ -405,7 +413,7 @@ impl ArbitrageDetector {
         let no_bid = no_orderbook.best_bid()?;
 
         let total_revenue = yes_bid + no_bid;
-        
+
         // No opportunity if revenue <= 1.0
         if total_revenue <= 1.0 {
             return None;
@@ -424,7 +432,7 @@ impl ArbitrageDetector {
         // Fees: Taker fee on both Sells.
         let yes_fee = self.config.calculate_fee_rate(yes_bid) * yes_bid;
         let no_fee = self.config.calculate_fee_rate(no_bid) * no_bid;
-        
+
         // Net Revenue = (Yes_Bid - Fee) + (No_Bid - Fee)
         let net_revenue = (yes_bid - yes_fee) + (no_bid - no_fee);
         let net_profit = net_revenue - 1.0;
@@ -587,7 +595,7 @@ mod tests {
         // Mint @ 1.0, Sell @ 1.03 -> 3% gross
         let mut yes_ob = mock_orderbook("TEST-YES", 0.54, 1000.0); // Ask 0.54, Bid 0.52
         let mut no_ob = mock_orderbook("TEST-NO", 0.53, 1000.0); // Ask 0.53, Bid 0.51
-        
+
         // Fix bids for mock
         yes_ob.bids[0].price = 0.52;
         no_ob.bids[0].price = 0.51;

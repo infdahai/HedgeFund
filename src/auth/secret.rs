@@ -11,9 +11,9 @@
 
 use crate::error::{Error, Result};
 use std::env;
+use std::fmt;
 use std::io::{self, BufRead};
 use zeroize::Zeroizing;
-use std::fmt;
 
 /// A wrapper for sensitive private key data.
 /// Wraps `Zeroizing<String>` to ensure memory is cleared on drop.
@@ -65,20 +65,24 @@ impl SecretLoader {
         let stdin = io::stdin();
         let mut reader = stdin.lock();
         let mut line = String::new();
-        
+
         match reader.read_line(&mut line) {
             Ok(n) if n > 0 => {
                 let cleaned = clean_key(&line);
                 if cleaned.is_empty() {
-                     return Err(Error::ConfigError("Empty private key provided via STDIN".into()));
+                    return Err(Error::ConfigError(
+                        "Empty private key provided via STDIN".into(),
+                    ));
                 }
                 if cleaned.len() != 64 {
-                    return Err(Error::ConfigError("Invalid private key length from STDIN".into()));
+                    return Err(Error::ConfigError(
+                        "Invalid private key length from STDIN".into(),
+                    ));
                 }
                 Ok(SecretString::new(cleaned))
             }
-            _ => Err(Error::MissingConfig { 
-                field: "OPINION_PRIVATE_KEY or STDIN".into() 
+            _ => Err(Error::MissingConfig {
+                field: "OPINION_PRIVATE_KEY or STDIN".into(),
             }),
         }
     }

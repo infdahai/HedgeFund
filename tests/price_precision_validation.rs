@@ -1,11 +1,10 @@
 /// Validation: 1 decimal place price precision (0.1 - 0.9)
-/// 
+///
 /// This test validates that price formatting works correctly for the frontend use case,
 /// where users only place orders with 1 decimal place precision.
-
 #[cfg(test)]
 mod price_precision_tests {
-    
+
     #[test]
     fn test_price_formatting_one_decimal() {
         let test_cases = vec![
@@ -53,28 +52,30 @@ mod price_precision_tests {
     #[test]
     fn test_rollback_price_calculation() {
         let original_prices = vec![0.1_f64, 0.3_f64, 0.5_f64, 0.7_f64, 0.9_f64];
-        
+
         for original in original_prices {
             let buy_rollback = original * 1.05_f64;
             let buy_rounded = (buy_rollback * 10.0_f64).round() / 10.0_f64;
-            let buy_clamped = buy_rounded.max(0.1_f64).min(0.9_f64);
-            
+            let buy_clamped = buy_rounded.clamp(0.1_f64, 0.9_f64);
+
             assert!(
-                buy_clamped >= 0.1_f64 && buy_clamped <= 0.9_f64,
+                (0.1_f64..=0.9_f64).contains(&buy_clamped),
                 "Buy rollback for {} should be in range [0.1, 0.9], got {}",
-                original, buy_clamped
+                original,
+                buy_clamped
             );
-            
+
             let sell_rollback = original * 0.95_f64;
             let sell_rounded = (sell_rollback * 10.0_f64).round() / 10.0_f64;
-            let sell_clamped = sell_rounded.max(0.1_f64).min(0.9_f64);
-            
+            let sell_clamped = sell_rounded.clamp(0.1_f64, 0.9_f64);
+
             assert!(
-                sell_clamped >= 0.1_f64 && sell_clamped <= 0.9_f64,
+                (0.1_f64..=0.9_f64).contains(&sell_clamped),
                 "Sell rollback for {} should be in range [0.1, 0.9], got {}",
-                original, sell_clamped
+                original,
+                sell_clamped
             );
-            
+
             println!(
                 "Original: {:.1} → Buy Rollback: {:.1}, Sell Rollback: {:.1}",
                 original, buy_clamped, sell_clamped
@@ -108,17 +109,19 @@ mod price_precision_tests {
     fn test_price_string_parsing() {
         // Verify that formatted strings can be parsed back correctly
         let prices = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
-        
+
         for original_price in prices {
             let price_str = format!("{:.1}", original_price);
             let parsed: f64 = price_str.parse().expect("Should parse back to f64");
-            
+
             // Allow small floating point error
             let diff = (parsed - original_price).abs();
             assert!(
                 diff < 0.01,
                 "Parsed price {} should be close to original {}, diff: {}",
-                parsed, original_price, diff
+                parsed,
+                original_price,
+                diff
             );
         }
     }
@@ -128,36 +131,39 @@ mod price_precision_tests {
         // Test that price * amount calculations maintain precision
         let price = 0.5;
         let amount = 100.0;
-        
+
         let result = price * amount;
         assert_eq!(result, 50.0, "0.5 * 100 should equal 50.0");
-        
+
         // Format and verify
         let price_str = format!("{:.1}", price);
         assert_eq!(price_str, "0.5");
-        
+
         let parsed: f64 = price_str.parse().unwrap();
         let recalc = parsed * amount;
-        assert_eq!(recalc, 50.0, "Parsed price calculation should still be correct");
+        assert_eq!(
+            recalc, 50.0,
+            "Parsed price calculation should still be correct"
+        );
     }
 
     #[test]
     fn test_price_range_validation() {
         // All valid 1-decimal prices
         let valid_prices: Vec<f64> = (1..=9).map(|i| i as f64 / 10.0).collect();
-        
+
         for price in valid_prices {
             assert!(
-                price >= 0.1 && price <= 0.9,
+                (0.1..=0.9).contains(&price),
                 "Price {} should be in valid range [0.1, 0.9]",
                 price
             );
-            
+
             let formatted = format!("{:.1}", price);
             let parsed: f64 = formatted.parse().unwrap();
-            
+
             assert!(
-                parsed >= 0.1 && parsed <= 0.9,
+                (0.1..=0.9).contains(&parsed),
                 "Parsed price {} should still be in valid range",
                 parsed
             );

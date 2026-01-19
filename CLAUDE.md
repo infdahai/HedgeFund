@@ -27,6 +27,7 @@ cargo run                # Start bot
 | `live_websocket_tests` | 4 | WebSocket connection, subscriptions |
 | `trading_scenarios` | 8 | EIP-712 signing, market scenarios |
 | `dual_mode_client` | 3 | Environment switching (local/aws) |
+| `live_rpc_failover` | 2 | RPC primary/fallback switching |
 
 **Note**: All integration tests require valid `.env` configuration with API credentials.
 
@@ -162,6 +163,7 @@ referral_discount: 0.10, // 10% 邀请折扣
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-20 | Implemented RPC failover: ChainClient now supports primary/fallback RPC endpoints with automatic health check and recovery. ConfirmationTracker batch optimization: 50ms buffer window for balanceOfBatch, reducing RPC calls by ~80%. New env vars: OPINION_RPC_URL_PRIMARY, OPINION_RPC_URL_FALLBACK, OPINION_BATCH_BUFFER_MS, OPINION_HEALTH_CHECK_INTERVAL |
 | 2026-01-19 | Fixed market status filter: use `"activated"` (string) instead of `"2"` (numeric); Updated price precision: support 0.1-0.9 range with 1 decimal; Throttled RiskManager health check from 1s to 30s interval |
 | 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |

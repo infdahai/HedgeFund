@@ -23,12 +23,16 @@ struct TradeRecord {
 #[test]
 fn benchmark_json_parsing() {
     let order_update_json = r#"{"order_id":"12345","status":"Finish","shares":"1000000000000000000","filled_shares":"1000000000000000000"}"#;
-    let trade_record_json = r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
+    let trade_record_json =
+        r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
     let market_data_json = r#"{"channel":"market.data.BTC-YES","data":{"bids":[["0.700","1000000000000000000"],["0.695","2000000000000000000"]],"asks":[["0.710","1000000000000000000"]]}}"#;
 
     const ITERATIONS: usize = 10_000;
 
-    println!("\n=== JSON Parsing Benchmark ({} iterations) ===\n", ITERATIONS);
+    println!(
+        "\n=== JSON Parsing Benchmark ({} iterations) ===\n",
+        ITERATIONS
+    );
 
     // Test 1: OrderUpdate with serde_json
     println!("Test: serde_json::from_str (OrderUpdate)");
@@ -38,7 +42,10 @@ fn benchmark_json_parsing() {
     }
     let serde_time = start.elapsed();
     println!("  Total: {:?}", serde_time);
-    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
+    println!(
+        "  Avg per iteration: {:?}\n",
+        serde_time / ITERATIONS as u32
+    );
 
     // Test 2: OrderUpdate with simd_json
     println!("Test: simd_json::from_slice (OrderUpdate)");
@@ -62,7 +69,10 @@ fn benchmark_json_parsing() {
     }
     let serde_time = start.elapsed();
     println!("  Total: {:?}", serde_time);
-    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
+    println!(
+        "  Avg per iteration: {:?}\n",
+        serde_time / ITERATIONS as u32
+    );
 
     // Test 4: TradeRecord with simd_json
     println!("Test: simd_json::from_slice (TradeRecord)");
@@ -87,7 +97,10 @@ fn benchmark_json_parsing() {
     }
     let serde_time = start.elapsed();
     println!("  Total: {:?}", serde_time);
-    println!("  Avg per iteration: {:?}\n", serde_time / ITERATIONS as u32);
+    println!(
+        "  Avg per iteration: {:?}\n",
+        serde_time / ITERATIONS as u32
+    );
 
     // Test 6: MarketData with simd_json
     println!("Test: simd_json::to_owned_value (MarketData)");

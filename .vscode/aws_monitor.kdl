@@ -1,0 +1,48 @@
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="HFT Monitor" focus=true {
+        pane split_direction="vertical" {
+            
+            // --- 左侧主区域 (65%) ---
+            pane split_direction="horizontal" size="65%" {
+                // 上半部分：Bot 运行区 (稍微大一点)
+                pane name="Bot Runner" size="60%" command="bash" {
+                    // 启动后直接进入项目目录
+                    // args "-c" "cd ~/opinion-hft; exec bash"
+                }
+                
+                // 下半部分：日志区
+                pane name="Logs" size="40%" command="tail" {
+                    args "-f" "opinion.log"
+                }
+            }
+
+            // --- 右侧监控区 (35%) ---
+            pane split_direction="horizontal" size="35%" {
+                // 1. 系统监控 (改为 htop，更耐挤)
+                // 占用 70% 高度，确保能看到内存和 CPU 条
+                pane name="System" size="70%" command="htop"
+
+                // 2. 网络延迟 (Ping)
+                // 占用剩余空间，只显示简单的 ping
+                pane name="Network" command="ping" {
+                    args "proxy.opinion.trade"
+                }
+            }
+        }
+    }
+    
+    // 备用 Tab
+    tab name="Terminal" {
+        pane
+    }
+}

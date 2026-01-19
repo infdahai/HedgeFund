@@ -1,10 +1,11 @@
 {
     // Rust 配置
-    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.checkOnSave": true,
+    "rust-analyzer.check.command": "clippy",
     "rust-analyzer.cargo.features": "all",
-    "rust-analyzer.cargo.loadOutDirsFromCheck": true,
-    "rust-analyzer.rustfmt.extraArgs": ["+nightly"],
-
+    "rust-analyzer.rustfmt.extraArgs": [
+        "+nightly"
+    ],
     // 编辑器配置
     "[rust]": {
         "editor.formatOnSave": true,
@@ -12,23 +13,20 @@
         "editor.tabSize": 4,
         "editor.insertSpaces": true
     },
-
     // 文件关联
     "files.associations": {
         "Cargo.lock": "toml",
         "*.rs": "rust"
     },
-
     // 自动保存
     "files.autoSave": "afterDelay",
     "files.autoSaveDelay": 1000,
-
     // 测试配置
-    "rust-analyzer.runnables.extraArgs": ["--test-threads=1"],
-
+    "rust-analyzer.runnables.extraArgs": [
+        "--test-threads=1"
+    ],
     // 调试控制台
     "debug.console.closeOnEnd": false,
-
     // 终端
     "terminal.integrated.env.osx": {
         "RUST_LOG": "info",

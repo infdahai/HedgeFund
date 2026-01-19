@@ -1,12 +1,12 @@
 use alloy_primitives::{keccak256, Address, B256, U256};
 use k256::ecdsa::{signature::hazmat::PrehashSigner, RecoveryId, SigningKey};
 
+use crate::auth::secret::PrivateKey;
 use crate::config::{
     CHAIN_ID, CONDITIONAL_TOKENS_ADDRESS, EIP712_DOMAIN_NAME, EIP712_DOMAIN_VERSION,
 };
 use crate::error::{Error, Result};
 use crate::types::order::{Order, Signature};
-use crate::auth::secret::PrivateKey;
 
 use super::signer::OrderSigner;
 

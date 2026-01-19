@@ -1,7 +1,7 @@
 use dashmap::DashMap;
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde::Serialize;
 use tracing::info;
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,15 +32,18 @@ impl Scoreboard {
     }
 
     pub async fn register_signal(&self, strategy_name: &str) {
-        let entry = self.stats.entry(strategy_name.to_string()).or_insert_with(|| {
-            Mutex::new(StrategyStats {
-                name: strategy_name.to_string(),
-                signals: 0,
-                fills: 0,
-                profit: 0.0,
-                weight: 1.0,
-            })
-        });
+        let entry = self
+            .stats
+            .entry(strategy_name.to_string())
+            .or_insert_with(|| {
+                Mutex::new(StrategyStats {
+                    name: strategy_name.to_string(),
+                    signals: 0,
+                    fills: 0,
+                    profit: 0.0,
+                    weight: 1.0,
+                })
+            });
         let mut stats = entry.lock().await;
         stats.signals += 1;
     }
@@ -50,14 +53,17 @@ impl Scoreboard {
             let mut stats = entry.lock().await;
             stats.fills += 1;
             stats.profit += profit;
-            
+
             if profit > 0.0 {
                 stats.weight = (stats.weight * 1.05).min(2.0);
             } else if profit < 0.0 {
                 stats.weight = (stats.weight * 0.95).max(0.1);
             }
 
-            info!("Strategy Update: {} -> Profit: {}, New Weight: {:.2}", strategy_name, stats.profit, stats.weight);
+            info!(
+                "Strategy Update: {} -> Profit: {}, New Weight: {:.2}",
+                strategy_name, stats.profit, stats.weight
+            );
         }
     }
 

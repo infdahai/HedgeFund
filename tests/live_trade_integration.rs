@@ -8,16 +8,16 @@
 //
 // Tests are ignored by default (#[ignore]) because they require live API access and valid credentials in .env file
 
+use alloy_primitives::{Address, U256};
 use opinion_hft::{
+    auth::{Eip712Signer, OrderSigner},
     config::Config,
     data::rest::{OpinionClient, OpinionResponse},
-    types::order::{Order, OrderSide, OrderIntent, SignatureType},
-    auth::{Eip712Signer, OrderSigner},
+    types::order::{Order, OrderIntent, OrderSide, SignatureType},
 };
-use alloy_primitives::{Address, U256};
-use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,11 +93,16 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
     let client = OpinionClient::new(&config.api, config.environment)?;
 
     // 1. Get active market
-    let markets = client.get_markets_with_params(Some("activated"), Some(1)).await?;
+    let markets = client
+        .get_markets_with_params(Some("activated"), Some(1))
+        .await?;
     assert!(!markets.is_empty(), "No activated markets found");
 
     let market = &markets[0];
-    println!("📌 Target Market: {} (ID: {})", market.market_title, market.market_id);
+    println!(
+        "📌 Target Market: {} (ID: {})",
+        market.market_title, market.market_id
+    );
 
     let token_id_str = market.yes_token_id.clone().unwrap_or_default();
     assert!(!token_id_str.is_empty(), "No YES token ID found");
@@ -161,18 +166,22 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
     let signature = signer.sign_order(&order)?;
     let sig_hex = signature.to_hex();
 
-    let request = PlaceOrderRequest::from_order(
-        &order, &sig_hex, market.market_id as u64, quote_token
-    );
+    let request =
+        PlaceOrderRequest::from_order(&order, &sig_hex, market.market_id as u64, quote_token);
     let request_json = serde_json::to_value(&request)?;
     let mut final_json = request_json;
     final_json["price"] = Value::String(price.to_string());
 
     let response: OpinionResponse<serde_json::Value> = client.post("order", &final_json).await?;
 
-    assert_eq!(response.code, 0, "Order failed: [{}] {}", response.code, response.msg);
+    assert_eq!(
+        response.code, 0,
+        "Order failed: [{}] {}",
+        response.code, response.msg
+    );
 
-    let order_id = response.result
+    let order_id = response
+        .result
         .as_ref()
         .and_then(|r| r.get("orderData"))
         .and_then(|d| d.get("orderId"))
@@ -197,7 +206,10 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
             println!("   - Status: {} ({})", o.status_enum, o.status);
             println!("   - Price: {}", o.price);
             println!("   - Amount: {} USDT", o.order_amount);
-            println!("   - Filled: {} USDT / {} shares", o.filled_amount, o.filled_shares);
+            println!(
+                "   - Filled: {} USDT / {} shares",
+                o.filled_amount, o.filled_shares
+            );
         }
         None => {
             println!("   Order not found in user orders (may still be processing)");
@@ -229,7 +241,8 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
     match order_after {
         Some(o) => {
             println!("   Order status: {} ({})", o.status_enum, o.status);
-            if o.status == 4 {  // Cancelled status
+            if o.status == 4 {
+                // Cancelled status
                 println!("✅ Order successfully cancelled!");
             } else {
                 println!("⚠️ Order status is: {}", o.status_enum);
@@ -256,12 +269,17 @@ async fn test_api_auth_and_config() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
     assert!(!config.api.api_key.is_empty(), "API key must be configured");
-    assert!(!config.chain.eoa_address.is_empty(), "EOA address must be configured");
+    assert!(
+        !config.chain.eoa_address.is_empty(),
+        "EOA address must be configured"
+    );
 
     let client = OpinionClient::new(&config.api, config.environment)?;
 
     // Test markets endpoint
-    let markets = client.get_markets_with_params(Some("activated"), Some(1)).await?;
+    let markets = client
+        .get_markets_with_params(Some("activated"), Some(1))
+        .await?;
     println!("✅ Markets API accessible: {} markets found", markets.len());
 
     // Test user auth endpoint

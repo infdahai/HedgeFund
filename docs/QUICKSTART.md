@@ -28,8 +28,19 @@ OPINION_ENV=local  # or aws
 # Proxy (local only)
 OPINION_PROXY_URL=http://127.0.0.1:7890
 
-# Blockchain
+# Blockchain RPC (Primary/Fallback)
+# Primary: Use dedicated node for lower latency (NodeReal/QuickNode)
+OPINION_RPC_URL_PRIMARY=https://bsc-mainnet.nodereal.io/v1/YOUR_API_KEY
+# Fallback: Public node as backup
+OPINION_RPC_URL_FALLBACK=https://bsc-dataseed.binance.org
+# Legacy (still supported, used if PRIMARY not set)
 BSC_RPC_URL=https://bsc-dataseed.binance.org
+
+# RPC Optimization
+OPINION_BATCH_BUFFER_MS=50           # Batch query buffer window (ms)
+OPINION_HEALTH_CHECK_INTERVAL=30     # Health check interval (seconds)
+
+# Wallet
 PRIVATE_KEY=0x...
 OPINION_EOA_ADDRESS=0x...
 ```
@@ -39,6 +50,13 @@ OPINION_EOA_ADDRESS=0x...
 ### Unit Tests (No API Required)
 ```bash
 cargo test --lib
+```
+
+### Replay Engine Tests (No API Required)
+```bash
+# JSONL-driven replay metrics and risk manager validation
+cargo test --test live_order_tests test_sim_replay_metrics
+cargo test --test live_order_tests test_sim_replay_risk_manager
 ```
 
 ### Integration Tests (Requires .env)
@@ -57,6 +75,11 @@ cargo test --test live_trade_integration
 ```bash
 cargo run --release
 ```
+
+## Replay Engine (Offline)
+
+- Implemented in `src/lib.rs` as `ReplayTestClient` (JSONL input).
+- Tests live in `tests/live_order_tests.rs` and validate metrics + risk manager behavior.
 
 ## First Steps
 

@@ -1,8 +1,9 @@
 use alloy_primitives::U256;
 use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::chain::client::ChainClient;
 use crate::config::{ConfirmationConfig, ConfirmationMode};
@@ -40,12 +41,16 @@ pub struct ConfirmationTracker {
     chain_client: ChainClient,
     config: ConfirmationConfig,
     confirmation_tx: mpsc::Sender<ConfirmedOrder>,
+    batch_buffer: Arc<Mutex<Vec<String>>>,
+    batch_timer: Arc<Mutex<Option<Instant>>>,
+    batch_buffer_ms: u64,
 }
 
 impl ConfirmationTracker {
     pub fn new(
         chain_client: ChainClient,
         config: ConfirmationConfig,
+        batch_buffer_ms: u64,
     ) -> (Self, mpsc::Receiver<ConfirmedOrder>) {
         let (confirmation_tx, confirmation_rx) = mpsc::channel(256);
 
@@ -54,6 +59,9 @@ impl ConfirmationTracker {
             chain_client,
             config,
             confirmation_tx,
+            batch_buffer: Arc::new(Mutex::new(Vec::new())),
+            batch_timer: Arc::new(Mutex::new(None)),
+            batch_buffer_ms,
         };
 
         (tracker, confirmation_rx)
@@ -75,7 +83,11 @@ impl ConfirmationTracker {
         self.pending.contains_key(order_id)
     }
 
-    pub async fn on_order_finish(&self, order_id: &str, ws_fill: Option<U256>) -> Result<Option<ConfirmedOrder>> {
+    pub async fn on_order_finish(
+        &self,
+        order_id: &str,
+        ws_fill: Option<U256>,
+    ) -> Result<Option<ConfirmedOrder>> {
         let pending = match self.pending.remove(order_id) {
             Some((_, p)) => p,
             None => return Ok(None),
@@ -163,6 +175,118 @@ impl ConfirmationTracker {
 
         expired
     }
+
+    /// Add order to batch buffer and start timer if not started
+    #[allow(dead_code)]
+    async fn add_to_batch(&self, order_id: &str) {
+        let mut buffer = self.batch_buffer.lock().await;
+        buffer.push(order_id.to_string());
+
+        let mut timer = self.batch_timer.lock().await;
+        if timer.is_none() {
+            *timer = Some(Instant::now());
+        }
+    }
+
+    /// Check if batch should be flushed (timeout or max size) and process if so
+    pub async fn check_and_flush_batch(&self) -> Result<Vec<ConfirmedOrder>> {
+        let should_flush = {
+            let timer = self.batch_timer.lock().await;
+            let buffer = self.batch_buffer.lock().await;
+
+            if buffer.is_empty() {
+                false
+            } else if buffer.len() >= 10 {
+                true // Max batch size
+            } else if let Some(start) = *timer {
+                start.elapsed() > Duration::from_millis(self.batch_buffer_ms)
+            } else {
+                false
+            }
+        };
+
+        if !should_flush {
+            return Ok(Vec::new());
+        }
+
+        self.flush_batch().await
+    }
+
+    async fn flush_batch(&self) -> Result<Vec<ConfirmedOrder>> {
+        // 1. Drain buffer
+        let order_ids: Vec<String> = {
+            let mut buffer = self.batch_buffer.lock().await;
+            buffer.drain(..).collect()
+        };
+
+        // Reset timer
+        *self.batch_timer.lock().await = None;
+
+        if order_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. Collect token_ids from pending orders
+        let mut token_ids = Vec::new();
+        let mut order_map: HashMap<U256, Vec<String>> = HashMap::new();
+
+        for order_id in &order_ids {
+            if let Some(entry) = self.pending.get(order_id) {
+                let token_id = entry.token_id;
+                token_ids.push(token_id);
+                order_map
+                    .entry(token_id)
+                    .or_default()
+                    .push(order_id.clone());
+            }
+        }
+
+        if token_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 3. Batch query
+        let positions = self.chain_client.balance_of_batch(&token_ids).await?;
+
+        // 4. Process results
+        let mut confirmed_orders = Vec::new();
+
+        for position in positions {
+            if let Some(order_ids_for_token) = order_map.get(&position.token_id) {
+                for order_id in order_ids_for_token {
+                    if let Some((_, pending)) = self.pending.remove(order_id) {
+                        let position_after = position.balance;
+                        let actual_fill = match pending.side {
+                            OrderSide::Buy => {
+                                position_after.saturating_sub(pending.position_before)
+                            }
+                            OrderSide::Sell => {
+                                pending.position_before.saturating_sub(position_after)
+                            }
+                        };
+
+                        let confirmed = ConfirmedOrder {
+                            order_id: pending.order_id,
+                            market_id: pending.market_id,
+                            token_id: pending.token_id,
+                            side: pending.side,
+                            actual_fill,
+                            expected_price: pending.expected_price,
+                            position_before: pending.position_before,
+                            position_after,
+                            confirmation_time: pending.submitted_at.elapsed(),
+                            hedge_intent: pending.hedge_intent,
+                        };
+
+                        let _ = self.confirmation_tx.send(confirmed.clone()).await;
+                        confirmed_orders.push(confirmed);
+                    }
+                }
+            }
+        }
+
+        Ok(confirmed_orders)
+    }
 }
 
 impl Clone for ConfirmationTracker {
@@ -172,6 +296,9 @@ impl Clone for ConfirmationTracker {
             chain_client: self.chain_client.clone(),
             config: self.config.clone(),
             confirmation_tx: self.confirmation_tx.clone(),
+            batch_buffer: Arc::clone(&self.batch_buffer),
+            batch_timer: Arc::clone(&self.batch_timer),
+            batch_buffer_ms: self.batch_buffer_ms,
         }
     }
 }
@@ -185,15 +312,18 @@ mod tests {
     fn mock_chain_client() -> ChainClient {
         let config = ChainConfig {
             rpc_url: "https://bsc-dataseed.binance.org".into(),
+            primary_rpc_url: None,
+            fallback_rpc_url: None,
             chain_id: 56,
             private_key: crate::auth::secret::PrivateKey::default(),
             eoa_address: String::new(),
             conditional_tokens_address: CONDITIONAL_TOKENS_ADDRESS.into(),
             rpc_timeout: Duration::from_secs(5),
+            batch_buffer_ms: 50,
+            health_check_interval: Duration::from_secs(30),
         };
         ChainClient::new(&config, Address::ZERO).unwrap()
     }
-
 
     fn mock_config(mode: ConfirmationMode) -> ConfirmationConfig {
         ConfirmationConfig {
@@ -207,7 +337,7 @@ mod tests {
     fn test_confirmation_tracker_creation() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::Hybrid);
-        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config, 50);
         assert_eq!(tracker.pending_count(), 0);
     }
 
@@ -215,7 +345,7 @@ mod tests {
     fn test_register_order() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::Hybrid);
-        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config, 50);
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
@@ -227,7 +357,6 @@ mod tests {
             submitted_at: Instant::now(),
             hedge_intent: None,
         };
-
 
         tracker.register_order(pending);
         assert_eq!(tracker.pending_count(), 1);
@@ -238,7 +367,7 @@ mod tests {
     fn test_cancel_order() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::Hybrid);
-        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config, 50);
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
@@ -250,7 +379,6 @@ mod tests {
             submitted_at: Instant::now(),
             hedge_intent: None,
         };
-
 
         tracker.register_order(pending);
         assert_eq!(tracker.pending_count(), 1);
@@ -264,7 +392,7 @@ mod tests {
     fn test_timeout_expired_orders() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::Hybrid);
-        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker, _rx) = ConfirmationTracker::new(chain_client, config, 50);
 
         let old_pending = PendingOrder {
             order_id: "old-order".into(),
@@ -303,7 +431,7 @@ mod tests {
     async fn test_on_order_finish_trust_websocket() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::TrustWebSocket);
-        let (tracker, mut rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker, mut rx) = ConfirmationTracker::new(chain_client, config, 50);
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
@@ -315,7 +443,6 @@ mod tests {
             submitted_at: Instant::now(),
             hedge_intent: None,
         };
-
 
         tracker.register_order(pending);
 
@@ -334,7 +461,7 @@ mod tests {
     fn test_clone_shares_pending() {
         let chain_client = mock_chain_client();
         let config = mock_config(ConfirmationMode::Hybrid);
-        let (tracker1, _rx) = ConfirmationTracker::new(chain_client, config);
+        let (tracker1, _rx) = ConfirmationTracker::new(chain_client, config, 50);
 
         let pending = PendingOrder {
             order_id: "order-1".into(),
@@ -346,7 +473,6 @@ mod tests {
             submitted_at: Instant::now(),
             hedge_intent: None,
         };
-
 
         tracker1.register_order(pending);
 

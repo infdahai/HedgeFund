@@ -6,46 +6,11 @@
             "request": "launch",
             "name": "Debug Main",
             "cargo": {
-                "args": [
-                    "build",
-                    "--package=opinion-hft",
-                    "--bin=opinion-hft"
-                ],
-                "filter": {
-                    "name": "opinion-hft",
-                    "kind": "bin"
-                }
+                "args": ["build", "--bin=opinion-hft"]
             },
-            "args": [],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
-                "OPINION_ENV": "local",
-                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
-            },
-            "preLaunchTask": "cargo: build opinion-hft"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug Unit Tests",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--package=opinion-hft",
-                    "--lib"
-                ],
-                "filter": {
-                    "name": "opinion-hft",
-                    "kind": "lib"
-                }
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1",
                 "OPINION_ENV": "local",
                 "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
@@ -53,15 +18,10 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug All Tests",
+            "name": "Debug Tests",
             "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--package=opinion-hft"
-                ]
+                "args": ["test", "--no-run", "--lib"]
             },
-            "args": [],
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug",
@@ -69,82 +29,6 @@
                 "OPINION_ENV": "local",
                 "OPINION_PROXY_URL": "http://127.0.0.1:7890"
             }
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug Integration Tests (live)",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--package=opinion-hft",
-                    "--test=live_trade_integration"
-                ]
-            },
-            "args": [
-                "--test-threads=1"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1",
-                "OPINION_ENV": "local",
-                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
-            }
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug Specific Test",
-            "cargo": {
-                "args": [
-                    "test",
-                    "--no-run",
-                    "--package=opinion-hft"
-                ]
-            },
-            "args": [
-                "${input:testName}",
-                "--exact",
-                "--nocapture"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "RUST_LOG": "debug",
-                "RUST_BACKTRACE": "1",
-                "OPINION_ENV": "local",
-                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
-            }
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Debug Signer Benchmark",
-            "cargo": {
-                "args": [
-                    "bench",
-                    "--no-run",
-                    "--package=opinion-hft",
-                    "--bench=signer_bench"
-                ]
-            },
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "RUST_LOG": "info",
-                "RUST_BACKTRACE": "1",
-                "OPINION_ENV": "local",
-                "OPINION_PROXY_URL": "http://127.0.0.1:7890"
-            }
-        }
-    ],
-    "inputs": [
-        {
-            "type": "promptString",
-            "id": "testName",
-            "description": "Enter the full test name to debug (e.g., tests::test_order_lifecycle)",
-            "default": ""
         }
     ]
 }

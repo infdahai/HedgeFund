@@ -128,8 +128,6 @@ impl RiskManager {
         Ok(())
     }
 
-
-
     /// Record trade result and check for stop-loss triggers.
     /// This serves as the post-trade validation step.
     pub fn validate_post_trade(&mut self, record: TradeRecord) -> Result<()> {
@@ -278,7 +276,8 @@ impl RiskManager {
                 if latency > max_latency {
                     let env_name = if self.env.is_local() { "local" } else { "aws" };
                     let suggestion = if self.env.is_local() {
-                        let proxy_url = std::env::var("OPINION_PROXY_URL").unwrap_or_else(|_| "http://127.0.0.1:7890".to_string());
+                        let proxy_url = std::env::var("OPINION_PROXY_URL")
+                            .unwrap_or_else(|_| "http://127.0.0.1:7890".to_string());
                         format!("Check proxy status at {}", proxy_url)
                     } else {
                         String::new()

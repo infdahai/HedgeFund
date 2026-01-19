@@ -62,7 +62,7 @@ impl MarketRotator {
             for market in random_markets {
                 // Subscribe to both Yes and No pair data
                 // Format: market.data.{pair}
-                
+
                 let yes_channel = format!("market.data.{}", market.yes_pair);
                 let no_channel = format!("market.data.{}", market.no_pair);
 

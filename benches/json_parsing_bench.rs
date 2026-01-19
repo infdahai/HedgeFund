@@ -19,7 +19,8 @@ struct TradeRecord {
 
 fn bench_serde_json(c: &mut Criterion) {
     let order_update_json = r#"{"order_id":"12345","status":"Finish","shares":"1000000000000000000","filled_shares":"1000000000000000000"}"#;
-    let trade_record_json = r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
+    let trade_record_json =
+        r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
 
     let mut group = c.benchmark_group("json_parsing");
 
@@ -40,7 +41,8 @@ fn bench_serde_json(c: &mut Criterion) {
 
 fn bench_simd_json(c: &mut Criterion) {
     let order_update_json = r#"{"order_id":"12345","status":"Finish","shares":"1000000000000000000","filled_shares":"1000000000000000000"}"#;
-    let trade_record_json = r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
+    let trade_record_json =
+        r#"{"order_id":"12345","tx_hash":"0x1234567890abcdef","amount":"1000000000000000000"}"#;
 
     let mut group = c.benchmark_group("json_parsing");
 
@@ -92,5 +94,10 @@ fn bench_websocket_message(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_serde_json, bench_simd_json, bench_websocket_message);
+criterion_group!(
+    benches,
+    bench_serde_json,
+    bench_simd_json,
+    bench_websocket_message
+);
 criterion_main!(benches);
