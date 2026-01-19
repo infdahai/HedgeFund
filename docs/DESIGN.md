@@ -1619,10 +1619,16 @@ SQLite schema (current)
 `orderbook_levels` (snapshot_id, side, price, size, level)
 `confirmed_orders` (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
 
+Daily rotation
+
+New file naming: `data/opinion-{YYYY-MM-DD}.sqlite`
+Rotation check: Before each insert, check if date changed vs current_db_date
+If rotated: Close old connection, create new DB, init schema, apply pragmas
+
 Env flags
 
 `OPINION_DATA_ENABLED` (default true)
-`OPINION_DATA_DB_PATH` (default data/opinion-hft.sqlite)
+`OPINION_DATA_DB_PATH` (default data/opinion-hft.sqlite, base directory for daily DBs)
 `OPINION_DATA_WAL` (default true)
 `OPINION_DATA_BATCH_SIZE` (default 200)
 `OPINION_DATA_FLUSH_MS` (default 1000)

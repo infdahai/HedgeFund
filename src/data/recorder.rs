@@ -1,6 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, Result as SqlResult};
-use std::path::Path;
+use std::mem;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -82,16 +83,29 @@ pub enum RecordEvent {
 pub struct Recorder {
     config: DataCollectionConfig,
     conn: Connection,
+    current_db_date: Option<String>,
 }
 
 impl Recorder {
     pub fn new(config: DataCollectionConfig) -> SqlResult<Self> {
-        let db_path = Path::new(&config.db_path);
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let conn = Connection::open(db_path)?;
-        let recorder = Self { config, conn };
+        let db_dir = if let Some(path) = Path::new(&config.db_path).parent() {
+            path.to_path_buf()
+        } else {
+            PathBuf::from("data")
+        };
+
+        std::fs::create_dir_all(&db_dir).ok();
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let db_path = db_dir.join(format!("opinion-{}.sqlite", today));
+
+        let conn = Connection::open(&db_path)?;
+        let current_db_date = Some(today.clone());
+        let recorder = Self {
+            config,
+            conn,
+            current_db_date,
+        };
         recorder.init_schema()?;
         recorder.apply_pragmas()?;
         Ok(recorder)
@@ -102,6 +116,32 @@ impl Recorder {
             self.conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         }
         self.conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+        Ok(())
+    }
+
+    fn maybe_rotate_db(&mut self) -> SqlResult<()> {
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        if self.current_db_date.as_deref() == Some(&today) {
+            return Ok(());
+        }
+
+        let db_dir = if let Some(path) = Path::new(&self.config.db_path).parent() {
+            path.to_path_buf()
+        } else {
+            PathBuf::from("data")
+        };
+
+        let new_db_path = db_dir.join(format!("opinion-{}.sqlite", today));
+
+        std::fs::create_dir_all(&db_dir).ok();
+
+        self.conn = Connection::open(&new_db_path)?;
+        self.current_db_date = Some(today);
+        self.init_schema()?;
+        self.apply_pragmas()?;
+
+        tracing::info!("Rotated to new daily database: {}", new_db_path.display());
+
         Ok(())
     }
 
@@ -157,6 +197,8 @@ impl Recorder {
         bids: &[(String, String)],
         asks: &[(String, String)],
     ) -> SqlResult<()> {
+        self.maybe_rotate_db()?;
+
         let captured_at_ms = Utc::now().timestamp_millis();
         let tx = self.conn.transaction()?;
         tx.execute(
@@ -166,24 +208,20 @@ impl Recorder {
         )?;
         let snapshot_id = tx.last_insert_rowid();
 
-        let mut level = 0;
-        for (price, size) in bids.iter().take(self.config.orderbook_depth) {
+        for (idx, (price, size)) in bids.iter().take(self.config.orderbook_depth).enumerate() {
             tx.execute(
                 "INSERT INTO orderbook_levels (snapshot_id, side, price, size, level)
                  VALUES (?1, 'bid', ?2, ?3, ?4)",
-                params![snapshot_id, price, size, level],
+                params![snapshot_id, price, size, idx as i32],
             )?;
-            level += 1;
         }
 
-        let mut level = 0;
-        for (price, size) in asks.iter().take(self.config.orderbook_depth) {
+        for (idx, (price, size)) in asks.iter().take(self.config.orderbook_depth).enumerate() {
             tx.execute(
                 "INSERT INTO orderbook_levels (snapshot_id, side, price, size, level)
                  VALUES (?1, 'ask', ?2, ?3, ?4)",
-                params![snapshot_id, price, size, level],
+                params![snapshot_id, price, size, idx as i32],
             )?;
-            level += 1;
         }
 
         tx.commit()?;
@@ -203,6 +241,8 @@ impl Recorder {
         confirmation_time_ms: u64,
         timestamp_ms: i64,
     ) -> SqlResult<()> {
+        self.maybe_rotate_db()?;
+
         self.conn.execute(
             "INSERT INTO confirmed_orders
             (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
@@ -276,12 +316,12 @@ pub async fn spawn_recorder(
 }
 
 async fn flush_events(recorder: &Arc<Mutex<Recorder>>, buffer: &mut Vec<RecordEvent>) {
-    let events: Vec<RecordEvent> = buffer.drain(..).collect();
+    let events: Vec<RecordEvent> = mem::take(buffer);
     if events.is_empty() {
         return;
     }
 
-    let recorder = recorder.lock().await;
+    let mut recorder = recorder.lock().await;
     for event in events {
         match event {
             RecordEvent::OrderbookSnapshot {
