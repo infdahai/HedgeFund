@@ -392,7 +392,7 @@ const ORDER_TYPEHASH: &str = "Order(uint256 salt,address maker,address signer,ad
 * ❌ **DO NOT** use Header for API key - MUST use query parameter.
 * ❌ **DO NOT** assume 2 or 3 decimal price - MUST use 1 decimal.
 * ❌ **DO NOT** use `ethers-rs` - Use Alloy (10x faster).
-* ❌ **DO NOT** block async I/O - CLAUDE.md rules require non-blocking.
+ * ❌ **DO NOT** block async I/O - agents.md rules require non-blocking.
 * ❌ **DO NOT** exceed 15 TPS - API will reject.
 * ❌ **DO NOT** trust WebSocket quantity data - Use on-chain query.
 
@@ -1271,7 +1271,7 @@ OPINION_TRACING_ENDPOINT=http://jaeger:14268/api/traces
 
 **See Also:**
 - `src/telemetry.rs` for implementation details
-- `CLAUDE.md` for logging guidelines
+ - `agents.md` for logging guidelines
 
 ---
 
@@ -1513,7 +1513,7 @@ impl ConfirmationTracker {
 ```text
 ├── Cargo.toml
 ├── README.md
-├── CLAUDE.md
+ ├── agents.md
 ├── .env.example
 ├── docs/
 │   ├── DESIGN.md              # Architecture and design decisions

@@ -129,5 +129,5 @@ cargo run --release
 ## Next Steps
 
 - Read [DESIGN.md](DESIGN.md) for architecture details
-- Check [CLAUDE.md](../CLAUDE.md) for development guidelines
+ - Check [agents.md](../agents.md) for development guidelines
 - Review existing tests for implementation patterns

@@ -164,6 +164,7 @@ referral_discount: 0.10, // 10% 邀请折扣
 | Date | Change |
 |------|--------|
 | 2026-01-20 | Implemented RPC failover: ChainClient now supports primary/fallback RPC endpoints with automatic health check and recovery. ConfirmationTracker batch optimization: 50ms buffer window for balanceOfBatch, reducing RPC calls by ~80%. New env vars: OPINION_RPC_URL_PRIMARY, OPINION_RPC_URL_FALLBACK, OPINION_BATCH_BUFFER_MS, OPINION_HEALTH_CHECK_INTERVAL |
+| 2026-01-19 | Implemented daily DB rotation with date-based file naming (data/opinion-{YYYY-MM-DD}.sqlite) to prevent single DB from exceeding 5GB and avoid VACUUM issues |
 | 2026-01-19 | Fixed market status filter: use `"activated"` (string) instead of `"2"` (numeric); Updated price precision: support 0.1-0.9 range with 1 decimal; Throttled RiskManager health check from 1s to 30s interval |
 | 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |
@@ -272,35 +273,35 @@ OPINION_EOA_ADDRESS=0x...
 #### Immediate Actions Required
 
 1. **Fix Test Amounts (P0 - Critical)**
-   ```rust
-   // ❌ WRONG - Below minimum
-   let price = 0.001;
-   let quantity = 200;  // Value = 2 USDT (below 1.30!)
-   
-   // ✅ CORRECT - Meet minimum
-   let price = 0.5;  // Mid-range realistic price
-   let quantity = 130;  // 130 * 0.5 = 65 USDT (above 1.30 minimum)
-   ```
+    ```rust
+    // ❌ WRONG - Below minimum
+    let price = 0.001;
+    let quantity = 200;  // Value = 2 USDT (below 1.30!)
+    
+    // ✅ CORRECT - Meet minimum
+    let price = 0.5;  // Mid-range realistic price
+    let quantity = 130;  // 130 * 0.5 = 65 USDT (above 1.30 minimum)
+    ```
 
 2. **Remove Extreme Price Orders**
-   - Delete or comment out ghost order placement (price = 0.001)
-   - Use prices that can actually execute (0.3 - 0.7 range)
+    - Delete or comment out ghost order placement (price = 0.001)
+    - Use prices that can actually execute (0.3 - 0.7 range)
 
 3. **Add Market Depth Validation**
-   ```rust
-   // Before placing order, check available liquidity
-   let orderbook = client.get_orderbook(token_id).await?;
-   let total_liquidity = sum_bid_liquidity(orderbook) + sum_ask_liquidity(orderbook);
-   if total_liquidity < 3.0 {  // Below test size
-       warn!("Insufficient liquidity: {:.2} USDT", total_liquidity);
-       return Ok(());
-   }
-   ```
+    ```rust
+    // Before placing order, check available liquidity
+    let orderbook = client.get_orderbook(token_id).await?;
+    let total_liquidity = sum_bid_liquidity(orderbook) + sum_ask_liquidity(orderbook);
+    if total_liquidity < 3.0 {  // Below test size
+        warn!("Insufficient liquidity: {:.2} USDT", total_liquidity);
+        return Ok(());
+    }
+    ```
 
 4. **Use Conservative Test Strategy**
-   - Test order flow with 1.5 USDT (not 65 USDT)
-   - Measure actual slippage in production conditions
-   - Validate minimum fill amount and execution quality
+    - Test order flow with 1.5 USDT (not 65 USDT)
+    - Measure actual slippage in production conditions
+    - Validate minimum fill amount and execution quality
 
 ---
 
@@ -309,21 +310,21 @@ OPINION_EOA_ADDRESS=0x...
 **When modifying integration tests, follow these rules:**
 
 1. **Minimum Order Amount**: All live tests MUST use **1.30 USDT minimum**
-   - Formula: `price * quantity >= 1.30`
-   - Recommended: Use 1.5 - 65 USDT range with prices 0.3 - 0.7
+    - Formula: `price * quantity >= 1.30`
+    - Recommended: Use 1.5 - 65 USDT range with prices 0.3 - 0.7
 
 2. **No Ghost Orders**: Never place orders that won't execute
-   - Minimum price: 0.3 for YES tokens
-   - Never use 0.001 or similar extreme values
+    - Minimum price: 0.3 for YES tokens
+    - Never use 0.001 or similar extreme values
 
 3. **Orderbook Awareness**: Check liquidity before placing orders
-   - Ensure total available liquidity is at least 10x the order size
-   - Fail fast if market is shallow
+    - Ensure total available liquidity is at least 10x the order size
+    - Fail fast if market is shallow
 
 4. **Realistic Test Prices**: Use actual market conditions
-   - Spread in prediction markets is typically 1-3%
-   - Test prices should be 0.3, 0.5, 0.7 (not 0.1, 0.9)
+    - Spread in prediction markets is typically 1-3%
+    - Test prices should be 0.3, 0.5, 0.7 (not 0.1, 0.9)
 
 5. **Measure Don't Just Assume**: Always log actual fill amounts, prices, and fees
-   - Calculate and report real P&L for each trade
-   - Use this data to improve strategy, not just pass/fail tests
+    - Calculate and report real P&L for each trade
+    - Use this data to improve strategy, not just pass/fail tests
