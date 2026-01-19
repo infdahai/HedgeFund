@@ -13,6 +13,8 @@ cargo test --test <name> # Run specific test file (e.g., live_account_tests)
 cargo run                # Start bot
 ```
 
+**Formatting Standard**: See [docs/FORMAT.md](./docs/FORMAT.md) for single formatting standard (rustfmt + clippy rules).
+
 ## Test Structure
 | Test File | Tests | Description |
 |-----------|-------|-------------|
@@ -199,6 +201,50 @@ OPINION_PROXY_URL=http://127.0.0.1:7890  # FlClash proxy port
 BSC_RPC_URL=https://bsc-dataseed.binance.org
 PRIVATE_KEY=0x...
 OPINION_EOA_ADDRESS=0x...
+
+# Data Collection (Phase 0 - SQLite Recorder)
+OPINION_DATA_ENABLED=true          # Enable/disable recorder (default: true)
+OPINION_DATA_DB_PATH=data/opinion-hft.sqlite  # Base DB path (date suffix added automatically)
+OPINION_DATA_WAL=true               # Enable WAL mode for concurrent reads/writes (default: true)
+OPINION_DATA_BATCH_SIZE=200         # Batch size before auto-flush (default: 200)
+OPINION_DATA_FLUSH_MS=1000         # Flush interval in milliseconds (default: 1000)
+OPINION_DATA_OB_DEPTH=10           # Orderbook depth to record (default: 10)
+OPINION_DATA_QUEUE_CAP=2000        # Event queue capacity (default: 2000)
+```
+
+## Data Collection (Phase 0 - SQLite Recorder)
+
+The bot includes a SQLite-based data collector for recording market data and confirmed trades.
+
+**Key Features:**
+- **Daily DB rotation**: Creates separate SQLite files per day (`data/opinion-{YYYY-MM-DD}.sqlite`)
+- **WAL mode**: Configurable Write-Ahead Logging for concurrent reads/writes
+- **Batched writes**: Async batch writer with configurable size/flush interval
+- **Source of truth**: Only records confirmed orders from `ConfirmationTracker` (on-chain verified), not unreliable WebSocket data
+
+**Configuration:**
+- Config struct: `src/config.rs::DataCollectionConfig`
+- Module: `src/data/recorder.rs`
+- Integration: `src/main.rs` - wired into confirmation loop
+
+**Schema:**
+- `orderbook_snapshots` - Market depth snapshots with timestamps
+- `orderbook_levels` - Individual bid/ask levels linked to snapshots
+- `confirmed_orders` - Verified order executions with position tracking
+
+**Usage:**
+```rust
+use opinion_hft::data::recorder::spawn_recorder;
+
+let data_config = DataCollectionConfig::from_env();
+let recorder_handle = spawn_recorder(data_config)
+    .await
+    .map(|(handle, _join)| handle);
+
+// In confirmation loop:
+if let Some(recorder) = &recorder_handle {
+    recorder.record_confirmed_order(&confirmed).await;
+}
 ```
 
 ## Testing Analysis (2026-01-18)

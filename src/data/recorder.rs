@@ -1,6 +1,5 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, Result as SqlResult};
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -41,7 +40,7 @@ impl RecorderHandle {
     pub async fn record_confirmed_order(&self, confirmed: &ConfirmedOrder) {
         let _ = self
             .tx
-            .send(RecordEvent::ConfirmedOrder {
+            .send(RecordEvent::ConfirmedOrder(ConfirmedOrderRecord {
                 order_id: confirmed.order_id.clone(),
                 market_id: confirmed.market_id.clone(),
                 token_id: confirmed.token_id.to_string(),
@@ -52,9 +51,23 @@ impl RecorderHandle {
                 position_after: confirmed.position_after.to_string(),
                 confirmation_time_ms: confirmed.confirmation_time.as_millis() as u64,
                 timestamp_ms: Utc::now().timestamp_millis(),
-            })
+            }))
             .await;
     }
+}
+
+#[derive(Debug)]
+pub struct ConfirmedOrderRecord {
+    pub order_id: String,
+    pub market_id: String,
+    pub token_id: String,
+    pub side: String,
+    pub expected_price: f64,
+    pub actual_fill: String,
+    pub position_before: String,
+    pub position_after: String,
+    pub confirmation_time_ms: u64,
+    pub timestamp_ms: i64,
 }
 
 #[derive(Debug)]
@@ -66,18 +79,7 @@ pub enum RecordEvent {
         bids: Vec<(String, String)>,
         asks: Vec<(String, String)>,
     },
-    ConfirmedOrder {
-        order_id: String,
-        market_id: String,
-        token_id: String,
-        side: String,
-        expected_price: f64,
-        actual_fill: String,
-        position_before: String,
-        position_after: String,
-        confirmation_time_ms: u64,
-        timestamp_ms: i64,
-    },
+    ConfirmedOrder(ConfirmedOrderRecord),
 }
 
 pub struct Recorder {
@@ -116,32 +118,6 @@ impl Recorder {
             self.conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         }
         self.conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
-        Ok(())
-    }
-
-    fn maybe_rotate_db(&mut self) -> SqlResult<()> {
-        let today = Utc::now().format("%Y-%m-%d").to_string();
-        if self.current_db_date.as_deref() == Some(&today) {
-            return Ok(());
-        }
-
-        let db_dir = if let Some(path) = Path::new(&self.config.db_path).parent() {
-            path.to_path_buf()
-        } else {
-            PathBuf::from("data")
-        };
-
-        let new_db_path = db_dir.join(format!("opinion-{}.sqlite", today));
-
-        std::fs::create_dir_all(&db_dir).ok();
-
-        self.conn = Connection::open(&new_db_path)?;
-        self.current_db_date = Some(today);
-        self.init_schema()?;
-        self.apply_pragmas()?;
-
-        tracing::info!("Rotated to new daily database: {}", new_db_path.display());
-
         Ok(())
     }
 
@@ -208,59 +184,103 @@ impl Recorder {
         )?;
         let snapshot_id = tx.last_insert_rowid();
 
-        for (idx, (price, size)) in bids.iter().take(self.config.orderbook_depth).enumerate() {
+        let mut level = 0;
+        for (price, size) in bids.iter().take(self.config.orderbook_depth) {
             tx.execute(
                 "INSERT INTO orderbook_levels (snapshot_id, side, price, size, level)
                  VALUES (?1, 'bid', ?2, ?3, ?4)",
-                params![snapshot_id, price, size, idx as i32],
+                params![snapshot_id, price, size, level],
             )?;
+            level += 1;
         }
 
-        for (idx, (price, size)) in asks.iter().take(self.config.orderbook_depth).enumerate() {
+        for (price, size) in asks.iter().take(self.config.orderbook_depth) {
             tx.execute(
                 "INSERT INTO orderbook_levels (snapshot_id, side, price, size, level)
                  VALUES (?1, 'ask', ?2, ?3, ?4)",
-                params![snapshot_id, price, size, idx as i32],
+                params![snapshot_id, price, size, level],
             )?;
+            level += 1;
         }
 
         tx.commit()?;
         Ok(())
     }
 
-    fn insert_confirmed_order(
-        &mut self,
-        order_id: &str,
-        market_id: &str,
-        token_id: &str,
-        side: &str,
-        expected_price: f64,
-        actual_fill: &str,
-        position_before: &str,
-        position_after: &str,
-        confirmation_time_ms: u64,
-        timestamp_ms: i64,
-    ) -> SqlResult<()> {
+    fn insert_confirmed_order(&mut self, record: &ConfirmedOrderRecord) -> SqlResult<()> {
         self.maybe_rotate_db()?;
 
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO confirmed_orders
             (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                order_id,
-                market_id,
-                token_id,
-                side,
-                expected_price,
-                actual_fill,
-                position_before,
-                position_after,
-                confirmation_time_ms,
-                timestamp_ms
+                &record.order_id,
+                &record.market_id,
+                &record.token_id,
+                &record.side,
+                record.expected_price,
+                &record.actual_fill,
+                &record.position_before,
+                &record.position_after,
+                record.confirmation_time_ms,
+                record.timestamp_ms
             ],
         )?;
         Ok(())
+    }
+
+    fn maybe_rotate_db(&mut self) -> SqlResult<()> {
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        if self.current_db_date.as_deref() == Some(&today) {
+            return Ok(());
+        }
+
+        let db_dir = if let Some(path) = Path::new(&self.config.db_path).parent() {
+            path.to_path_buf()
+        } else {
+            PathBuf::from("data")
+        };
+
+        let new_db_path = db_dir.join(format!("opinion-{}.sqlite", today));
+
+        std::fs::create_dir_all(&db_dir).ok();
+
+        self.conn = Connection::open(&new_db_path)?;
+        self.current_db_date = Some(today.clone());
+        self.init_schema()?;
+        self.apply_pragmas()?;
+
+        tracing::info!("Rotated to new daily database: {}", new_db_path.display());
+
+        Ok(())
+    }
+}
+
+async fn flush_events(recorder: &Arc<Mutex<Recorder>>, buffer: &mut Vec<RecordEvent>) {
+    let mut recorder = recorder.lock().await;
+    for event in buffer.drain(..) {
+        match event {
+            RecordEvent::OrderbookSnapshot {
+                market_id,
+                pair,
+                snapshot_ts,
+                bids,
+                asks,
+            } => {
+                if let Err(err) =
+                    recorder.insert_orderbook_snapshot(&market_id, &pair, snapshot_ts, &bids, &asks)
+                {
+                    tracing::error!("Failed to insert orderbook snapshot: {}", err);
+                }
+            }
+            RecordEvent::ConfirmedOrder(record) => {
+                if let Err(err) = recorder.insert_confirmed_order(&record) {
+                    tracing::error!("Failed to insert confirmed order: {}", err);
+                }
+            }
+        }
     }
 }
 
@@ -313,57 +333,4 @@ pub async fn spawn_recorder(
     });
 
     Some((handle, join))
-}
-
-async fn flush_events(recorder: &Arc<Mutex<Recorder>>, buffer: &mut Vec<RecordEvent>) {
-    let events: Vec<RecordEvent> = mem::take(buffer);
-    if events.is_empty() {
-        return;
-    }
-
-    let mut recorder = recorder.lock().await;
-    for event in events {
-        match event {
-            RecordEvent::OrderbookSnapshot {
-                market_id,
-                pair,
-                snapshot_ts,
-                bids,
-                asks,
-            } => {
-                if let Err(err) =
-                    recorder.insert_orderbook_snapshot(&market_id, &pair, snapshot_ts, &bids, &asks)
-                {
-                    tracing::error!("Failed to insert orderbook snapshot: {}", err);
-                }
-            }
-            RecordEvent::ConfirmedOrder {
-                order_id,
-                market_id,
-                token_id,
-                side,
-                expected_price,
-                actual_fill,
-                position_before,
-                position_after,
-                confirmation_time_ms,
-                timestamp_ms,
-            } => {
-                if let Err(err) = recorder.insert_confirmed_order(
-                    &order_id,
-                    &market_id,
-                    &token_id,
-                    &side,
-                    expected_price,
-                    &actual_fill,
-                    &position_before,
-                    &position_after,
-                    confirmation_time_ms,
-                    timestamp_ms,
-                ) {
-                    tracing::error!("Failed to insert confirmed order: {}", err);
-                }
-            }
-        }
-    }
 }
