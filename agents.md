@@ -66,7 +66,7 @@ Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rquest** with 
 - Native async performance with tokio
 - Connection pooling and HTTP/2 support
 
-See [Architecture Design](./docs/DESIGN.md) for detailed system diagrams.
+See [Architecture Design](./docs/architecture.md) for detailed system diagrams.
 
 ## ChainClient RPC Retry
 `ChainClient` automatically retries failed RPC calls (up to 3 attempts) with exponential backoff.
@@ -171,7 +171,7 @@ referral_discount: 0.10, // 10% 邀请折扣
 | 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |
 | 2026-01-18 | Added small-scale arbitrage detection integration tests with real market data |
-| 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated DESIGN.md with Strategy, Telemetry, and Address Config sections |
+| 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated architecture.md with Strategy, Telemetry, and Address Config sections |
 | 2026-01-18 | Added comprehensive API test coverage: User Data (Positions, Balances, Trades) and Batch Operations (Place/Cancel) |
 | 2026-01-18 | Fixed API parameter issues: `chain_id` snake_case fix, handled null lists in responses |
 | 2026-01-18 | Updated test documentation and fixed CLAUDE.md commands |

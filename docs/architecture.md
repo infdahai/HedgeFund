@@ -1515,9 +1515,10 @@ impl ConfirmationTracker {
 ├── README.md
  ├── agents.md
 ├── .env.example
-├── docs/
-│   ├── DESIGN.md              # Architecture and design decisions
-│   └── QUICKSTART.md         # Quick start guide for new users
+ ├── docs/
+ │   ├── architecture.md       # Architecture and design decisions
+ │   ├── FORMAT.md             # Formatting standards (rustfmt + clippy)
+ │   └── QUICKSTART.md         # Quick start guide for new users
 ├── src/
 │   ├── lib.rs                # Library root
 │   ├── main.rs               # Bot entry point
