@@ -2,9 +2,10 @@
 
 ## Prerequisites
 
-- Rust 1.75+
+- Rust 1.90+
 - Valid Opinion.trade API key
 - BNB Chain RPC URL (or use public)
+- Optional: Python 3.12 + uv (for Parquet verification)
 
 ## Installation
 
@@ -65,6 +66,41 @@ cargo test --test live_trade_integration
 ```bash
 cargo run --release
 ```
+
+## Parquet Verification (Optional)
+
+If `OPINION_PARQUET_ENABLED=true` is set and data has been recorded, validate one
+Parquet file with the project venv to avoid system Python conflicts.
+
+```bash
+uv pip install polars
+".venv/bin/python" - <<'PY'
+import glob
+import polars as pl
+
+files = glob.glob("data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet")
+if not files:
+    raise SystemExit("No parquet files found under data/parquet/orderbook_snapshots_v1")
+
+target = files[0]
+print(f"Checking file: {target}")
+
+df = pl.read_parquet(target, hive_partitioning=True)
+print("\n--- Schema ---")
+print(df.schema)
+
+print("\n--- Data Preview ---")
+print(df.select(["local_recv_ts_us", "market_id", "bids", "date", "hour"]).head(5))
+
+bids_list = df["bids"].to_list()
+first_bids = bids_list[0] if bids_list else []
+print(f"\nFirst row bids count: {len(first_bids or [])}")
+if first_bids:
+    print(f"Top bid: {first_bids[0]}")
+PY
+```
+
+DuckDB alternative: see `docs/verify_parquet.sql`.
 
 ## First Steps
 

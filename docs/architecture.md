@@ -1573,12 +1573,11 @@ impl ConfirmationTracker {
 ```text
 ├── Cargo.toml
 ├── README.md
-├── agents.md               # Development guidelines (formerly CLAUDE.md)
+├── agents.md               # Development guidelines + formatting standard
 ├── .env.example
 ├── docs/
 │   ├── architecture.md       # Architecture and design decisions (formerly DESIGN.md)
-│   ├── FORMAT.md             # Formatting standards (rustfmt + clippy)
-│   └── QUICKSTART.md         # Quick start guide for new users
+│   └── QUICKSTART.md         # Quick start guide + verification notes
 ├── src/
 │   ├── lib.rs                # Library root
 │   ├── main.rs               # Bot entry point
@@ -1831,7 +1830,7 @@ Validation/tests:
 - Schema test: write and read a small Parquet file, confirm column types and nested list layout.
 - Rotation test: verify file roll-over on size/time.
 - Drop policy test: ensure trading loop never blocks when queue is full and dropped counter increments.
-- Local verification: see `docs/VERIFICATION.md` (use `.venv/bin/python`).
+- Local verification: see `docs/QUICKSTART.md` (Parquet verification section).
 
 Implementation notes:
 - Parquet is columnar (fast analytics, high compression); SQLite is row-oriented (good for small OLTP tables).
