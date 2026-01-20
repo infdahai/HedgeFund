@@ -7,9 +7,10 @@ use rquest_util::Emulation;
 use crate::config::{ApiConfig, Environment};
 use crate::error::{Error, Result};
 use super::models::{
-    OpinionResponse, MarketListResult, MarketDetailResult, ApiMarket, TokenOrderbook, LatestPrice,
-    OrderListResult, UserOrder, QuoteTokenInfo, QuoteTokenList, UserAuthInfo, PriceHistoryResult,
-    OrderDataWrapper
+    ApiMarket, CategoricalMarketData, CategoricalMarketDetailResult, LatestPrice, MarketDetailResult,
+    MarketListResult, MasterMarketListResult, MasterMarketParent, OpinionResponse, OrderDataWrapper,
+    OrderListResult, PriceHistoryResult, QuoteTokenInfo, QuoteTokenList, TokenOrderbook, UserAuthInfo,
+    UserOrder
 };
 
 #[derive(Clone)]
@@ -19,6 +20,7 @@ pub struct OpinionClient {
     api_key: String,
     cached_exchange_address: Arc<Mutex<Option<String>>>,
     cached_proxy_address: Arc<Mutex<Option<String>>>,
+    master_market_urls: Vec<String>,
 }
 
 impl OpinionClient {
@@ -58,16 +60,32 @@ impl OpinionClient {
 
         tracing::info!("OpinionClient initialized: {} mode (Chrome120 TLS emulation)", mode_desc);
 
+        let master_market_urls = std::env::var("OPINION_MASTER_MARKET_URL")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.trim().to_string())
+                    .filter(|item| !item.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .filter(|items| !items.is_empty())
+            .unwrap_or_default();
+
         Ok(Self {
             client,
             base_url: config.rest_base_url.trim_end_matches('/').to_string(),
             api_key: config.api_key.clone(),
             cached_exchange_address: Arc::new(Mutex::new(None)),
             cached_proxy_address: Arc::new(Mutex::new(None)),
+            master_market_urls,
         })
     }
 
     fn build_url(&self, endpoint: &str) -> String {
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return endpoint.to_string();
+        }
         format!("{}/{}", self.base_url, endpoint)
     }
 
@@ -164,10 +182,22 @@ impl OpinionClient {
     }
 
     pub async fn get_markets_with_params(&self, status: Option<&str>, limit: Option<u32>) -> Result<Vec<ApiMarket>> {
-        self.get_markets_with_pagination(status, limit, None).await
+        self.get_markets_with_filters(status, limit, None, None, None, None).await
     }
 
     pub async fn get_markets_with_pagination(&self, status: Option<&str>, limit: Option<u32>, page: Option<u32>) -> Result<Vec<ApiMarket>> {
+        self.get_markets_with_filters(status, limit, page, None, None, None).await
+    }
+
+    pub async fn get_markets_with_filters(
+        &self,
+        status: Option<&str>,
+        limit: Option<u32>,
+        page: Option<u32>,
+        market_type: Option<i32>,
+        chain_id: Option<u64>,
+        sort_by: Option<i32>,
+    ) -> Result<Vec<ApiMarket>> {
         let mut endpoint = "market".to_string();
         let mut params = vec![];
         if let Some(s) = status {
@@ -178,6 +208,15 @@ impl OpinionClient {
         }
         if let Some(p) = page {
             params.push(format!("page={}", p));
+        }
+        if let Some(mt) = market_type {
+            params.push(format!("market_type={}", mt));
+        }
+        if let Some(cid) = chain_id {
+            params.push(format!("chain_id={}", cid));
+        }
+        if let Some(sort) = sort_by {
+            params.push(format!("sort_by={}", sort));
         }
         if !params.is_empty() {
             endpoint = format!("{}?{}", endpoint, params.join("&"));
@@ -192,6 +231,14 @@ impl OpinionClient {
         // URL: /openapi/market/{marketId}
         let endpoint = format!("market/{}", market_id);
         let response: OpinionResponse<MarketDetailResult> = self.get(&endpoint).await?;
+        response.into_result()
+            .map(|r| r.data)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
+    }
+
+    pub async fn get_categorical_market(&self, market_id: i64) -> Result<CategoricalMarketData> {
+        let endpoint = format!("market/categorical/{}", market_id);
+        let response: OpinionResponse<CategoricalMarketDetailResult> = self.get(&endpoint).await?;
         response.into_result()
             .map(|r| r.data)
             .map_err(|e| Error::ApiError { status: 500, message: e })
@@ -227,6 +274,29 @@ impl OpinionClient {
         let response: OpinionResponse<OrderListResult> = self.get(&endpoint).await?;
         response.into_result().map(|r| r.list)
             .map_err(|e| Error::ApiError { status: 500, message: e })
+    }
+
+    pub fn has_master_market_url(&self) -> bool {
+        !self.master_market_urls.is_empty()
+    }
+
+    pub async fn get_master_market_list(&self) -> Result<Vec<MasterMarketParent>> {
+        if self.master_market_urls.is_empty() {
+            return Err(Error::MissingConfig {
+                field: "OPINION_MASTER_MARKET_URL".into(),
+            });
+        }
+
+        let mut combined = Vec::new();
+        for url in &self.master_market_urls {
+            let response: OpinionResponse<MasterMarketListResult> = self.get(url).await?;
+            let mut list = response.into_result()
+                .map(|r| r.list)
+                .map_err(|e| Error::ApiError { status: 500, message: e })?;
+            combined.append(&mut list);
+        }
+
+        Ok(combined)
     }
 
     pub async fn cancel_order(&self, order_id: &str) -> Result<serde_json::Value> {

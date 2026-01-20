@@ -58,7 +58,7 @@ pub struct OrderGateway {
     ws_client: WebSocketClient,
     maker_address: Address,
     proxy_address: Option<Address>,
-    _config: ExecutionConfig,
+    config: ExecutionConfig,
 }
 
 impl OrderGateway {
@@ -82,7 +82,7 @@ impl OrderGateway {
             ws_client,
             maker_address,
             proxy_address: None,
-            _config: config,
+            config,
         }
     }
 
@@ -126,6 +126,11 @@ impl OrderGateway {
                         std::future::pending().await
                     }
                 } => {
+                    if self.config.scan_only {
+                        info!("Scan-only mode enabled; skipping execution: {}", opp.summary());
+                        continue;
+                    }
+
                     if let Err(e) = self.submit_arbitrage(opp).await {
                         error!("Arbitrage execution failed: {}", e);
                     }
@@ -196,6 +201,10 @@ impl OrderGateway {
     }
 
     pub async fn submit_order(&self, intent: OrderIntent, hedge_intent: Option<OrderIntent>) -> Result<String> {
+        if self.config.scan_only {
+            return Err(Error::ConfigError("scan-only mode: order submission disabled".into()));
+        }
+
         // 1. Pre-trade Risk Check
         // Calculate estimated order size in USDT
         let (maker_amount, taker_amount) = intent.calculate_amounts();
@@ -310,6 +319,11 @@ impl OrderGateway {
     /// - Rollback if leg 2 fails
     /// - Smart batching (if API supports it)
     pub async fn submit_arbitrage(&self, opportunity: crate::strategy::arbitrage::ArbitrageOpportunity) -> Result<Vec<String>> {
+        if self.config.scan_only {
+            info!("Scan-only mode enabled; skipping execution: {}", opportunity.summary());
+            return Ok(Vec::new());
+        }
+
         let mut order_ids = Vec::new();
         
         info!("Executing arbitrage opportunity: {}", opportunity.summary());
@@ -318,7 +332,7 @@ impl OrderGateway {
         self.risk_manager.lock().await.validate_pre_trade(
             &opportunity.market_id,
             opportunity.expected_profit(opportunity.max_size),
-            opportunity.total_cost * opportunity.max_size
+            opportunity.total_spend
         )?;
 
         // Execute Legs Sequentially

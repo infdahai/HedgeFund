@@ -21,9 +21,11 @@ Create `.env` file in project root:
 OPINION_API_KEY=your_api_key_here
 OPINION_REST_URL=https://proxy.opinion.trade:8443/openapi/
 OPINION_WS_URL=wss://ws.opinion.trade
+OPINION_MASTER_MARKET_URL=https://...  # optional master list URL (comma-separated supported)
 
 # Environment
 OPINION_ENV=local  # or aws
+OPINION_SCAN_ONLY=true  # optional safety switch
 
 # Proxy (local only)
 OPINION_PROXY_URL=http://127.0.0.1:7890
@@ -105,6 +107,6 @@ cargo run --release
 
 ## Next Steps
 
-- Read [DESIGN.md](DESIGN.md) for architecture details
-- Check [CLAUDE.md](../CLAUDE.md) for development guidelines
+- Read [architecture.md](architecture.md) for architecture details
+- Check [agents.md](../agents.md) for development guidelines
 - Review existing tests for implementation patterns

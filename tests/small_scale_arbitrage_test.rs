@@ -96,9 +96,12 @@ async fn fetch_market_with_orderbook(
             no_token_id: no_token_id.clone(),
             yes_pair: yes_pair.clone(),
             no_pair: no_pair.clone(),
-            volume_24h: market.volume24h.and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            volume_24h: market.volume24h.as_ref().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             liquidity: 0.0,
             is_active: true,
+            market_type: market.market_type,
+            root_market_id: None,
+            parent_title: None,
         };
         
         let yes_orderbook = convert_orderbook(&yes_pair, yes_ob);
@@ -253,6 +256,8 @@ async fn test_arbitrage_configuration() {
     let config = ArbitrageConfig {
         min_profit_rate: 0.01,      // 1% minimum
         min_liquidity: 50.0,         // Lower threshold for testing
+        min_order_notional: 1.30,    // Keep consistent with defaults
+        min_fee: 0.50,               // Keep consistent with defaults
         topic_fee_rate: 0.02,        // 2% base fee
         referral_discount: 0.10,     // 10% rebate
         max_slippage: 0.02,          // 2% slippage

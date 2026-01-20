@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde::Deserializer;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpinionResponse<T> {
@@ -103,8 +105,163 @@ pub struct MarketListResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MasterMarketListResult {
+    pub list: Vec<MasterMarketParent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MasterMarketParent {
+    #[serde(default, alias = "title")]
+    pub market_title: Option<String>,
+    #[serde(default)]
+    pub status: Option<i32>,
+    #[serde(default)]
+    pub status_enum: Option<String>,
+    #[serde(default)]
+    pub market_type: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub root_market_id: Option<String>,
+    #[serde(default, alias = "id", deserialize_with = "deserialize_option_string")]
+    pub question_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_i64")]
+    pub topic_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub yes_token_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub no_token_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub yes_pos: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub no_pos: Option<String>,
+    #[serde(default)]
+    pub yes_buy_price: Option<String>,
+    #[serde(default)]
+    pub no_buy_price: Option<String>,
+    #[serde(default)]
+    pub volume: Option<String>,
+    #[serde(rename = "volume24h", default)]
+    pub volume24h: Option<String>,
+    #[serde(default)]
+    pub child_list: Option<Vec<MasterMarketChild>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MasterMarketChild {
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_option_i64")]
+    pub topic_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub question_id: Option<String>,
+    #[serde(default, alias = "title")]
+    pub market_title: Option<String>,
+    #[serde(default)]
+    pub status: Option<i32>,
+    #[serde(default)]
+    pub status_enum: Option<String>,
+    #[serde(default)]
+    pub market_type: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub yes_token_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub no_token_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub yes_pos: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_string")]
+    pub no_pos: Option<String>,
+    #[serde(default)]
+    pub yes_buy_price: Option<String>,
+    #[serde(default)]
+    pub no_buy_price: Option<String>,
+    #[serde(default)]
+    pub volume: Option<String>,
+    #[serde(rename = "volume24h", default)]
+    pub volume24h: Option<String>,
+}
+
+fn deserialize_option_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let result = match value {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::Bool(b)) => Some(b.to_string()),
+        Some(other) => Some(other.to_string()),
+    };
+    Ok(result)
+}
+
+fn deserialize_option_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let result = match value {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => n.as_i64(),
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                trimmed.parse::<i64>().ok()
+            }
+        }
+        _ => None,
+    };
+    Ok(result)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketDetailResult {
     pub data: ApiMarket,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoricalMarketDetailResult {
+    pub data: CategoricalMarketData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoricalMarketData {
+    pub market_id: i64,
+    pub market_title: String,
+    #[serde(default)]
+    pub child_markets: Vec<ApiChildMarket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiChildMarket {
+    pub market_id: i64,
+    pub market_title: String,
+    #[serde(default)]
+    pub yes_token_id: Option<String>,
+    #[serde(default)]
+    pub no_token_id: Option<String>,
+    #[serde(default)]
+    pub result_token_id: Option<String>,
+    #[serde(default)]
+    pub yes_label: Option<String>,
+    #[serde(default)]
+    pub no_label: Option<String>,
+    #[serde(default)]
+    pub status: Option<i32>,
+    #[serde(default)]
+    pub status_enum: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

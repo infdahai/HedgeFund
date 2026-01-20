@@ -27,6 +27,7 @@ rquest = { version = "5.1", features = ["json"] }
 rquest-util = { version = "2.2", features = ["emulation"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2.5"
+rustls = { version = "0.23", features = ["ring"] }
 
 # Data Structures
 dashmap = "6.0"
@@ -62,7 +63,6 @@ wiremock = "0.6"
 mockall = "0.13"
 proptest = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
-rustls = "0.23"
 
 [[bench]]
 name = "signer_bench"

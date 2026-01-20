@@ -53,8 +53,11 @@ impl SecretLoader {
     /// * `Ok(PrivateKey)` - The loaded key wrapped in a Secret type.
     /// * `Err(Error)` - If no key could be found.
     pub fn load_private_key() -> Result<PrivateKey> {
-        // 1. Check Env var first (non-blocking check)
-        if let Ok(key) = env::var("OPINION_PRIVATE_KEY") {
+        // 1. Check Env vars first (non-blocking check)
+        let env_key = env::var("OPINION_PRIVATE_KEY")
+            .or_else(|_| env::var("PRIVATE_KEY"))
+            .ok();
+        if let Some(key) = env_key {
             if !key.trim().is_empty() {
                 return Ok(SecretString::new(clean_key(&key)));
             }

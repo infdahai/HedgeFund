@@ -11,7 +11,11 @@ cargo test --lib         # Run 69 unit tests (no API required)
 cargo test --tests       # Run ALL live integration tests (requires .env)
 cargo test --test <name> # Run specific test file (e.g., live_account_tests)
 cargo run                # Start bot
+cargo run --bin market_sweep  # One-off market metadata sweep (logs all markets)
+cargo run --bin ws_probe      # One-off WS probe (subscribe + dump raw events)
 ```
+
+**Formatting Standard**: See [docs/FORMAT.md](./docs/FORMAT.md) for single formatting standard (rustfmt + clippy rules).
 
 ## Test Structure
 | Test File | Tests | Description |
@@ -27,6 +31,7 @@ cargo run                # Start bot
 | `live_websocket_tests` | 4 | WebSocket connection, subscriptions |
 | `trading_scenarios` | 8 | EIP-712 signing, market scenarios |
 | `dual_mode_client` | 3 | Environment switching (local/aws) |
+| `live_rpc_failover` | 2 | RPC primary/fallback switching |
 
 **Note**: All integration tests require valid `.env` configuration with API credentials.
 
@@ -42,6 +47,15 @@ cargo run                # Start bot
 | Market Status Filter | `"activated"` or `"resolved"` (string) | Numeric values like "2" |
 | Minimum Order | 1.30 USDT | - |
 | Market Detail | `/market/{id}` path param, `data` wrapper | `/market/detail?marketId={id}` |
+| Categorical Market Detail | `/market/categorical/{id}` | `/market/{id}` |
+
+**WebSocket Notes**
+- Subscribe payload uses `{"action":"subscribe","channel":"..."}` (not `type`).
+- Server acks with `{"code":200,"message":"Message processed"}`.
+- Orderbook channel uses `{"action":"SUBSCRIBE","channel":"market.depth.diff","marketId":<int>}` (diff stream).
+- Diff payload fields: `msgType`, `marketId`, `outcome` or `outcomeSide`, `side`, `price`, `size` (single level update).
+- `marketId` is the integer `topicId` from the master market list endpoint.
+- Always route updates by outcome ("YES"/"NO"); do not derive NO from YES.
 
 ## TLS Fingerprinting & HTTP Client
 Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rquest** with Chrome120 TLS emulation.
@@ -63,7 +77,7 @@ Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rquest** with 
 - Native async performance with tokio
 - Connection pooling and HTTP/2 support
 
-See [Architecture Design](./docs/DESIGN.md) for detailed system diagrams.
+See [Architecture Design](./docs/architecture.md) for detailed system diagrams.
 
 ## ChainClient RPC Retry
 `ChainClient` automatically retries failed RPC calls (up to 3 attempts) with exponential backoff.
@@ -162,14 +176,18 @@ referral_discount: 0.10, // 10% 邀请折扣
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-20 | Added market pagination + cached refresh, categorical market detail support, arbitrage fee/notional fixes with scan diagnostics, and risk sizing uses total spend. |
+| 2026-01-20 | Added master market list ingestion (topicId), WS `market.depth.diff` routing with outcome/outcomeSide, scan-only mode, local orderbook store, and sweep/probe tooling |
+| 2026-01-20 | Implemented RPC failover: ChainClient now supports primary/fallback RPC endpoints with automatic health check and recovery. ConfirmationTracker batch optimization: 50ms buffer window for balanceOfBatch, reducing RPC calls by ~80%. New env vars: OPINION_RPC_URL_PRIMARY, OPINION_RPC_URL_FALLBACK, OPINION_BATCH_BUFFER_MS, OPINION_HEALTH_CHECK_INTERVAL |
+| 2026-01-19 | Implemented daily DB rotation with date-based file naming (data/opinion-{YYYY-MM-DD}.sqlite) to prevent single DB from exceeding 5GB and avoid VACUUM issues |
 | 2026-01-19 | Fixed market status filter: use `"activated"` (string) instead of `"2"` (numeric); Updated price precision: support 0.1-0.9 range with 1 decimal; Throttled RiskManager health check from 1s to 30s interval |
 | 2026-01-19 | Implemented file logging system with daily rotation to logs/opinion-hft.log.YYYY-MM-DD, non-blocking I/O with WorkerGuard lifecycle management, environment-aware formatting (stdout vs file), test infrastructure updates with std::sync::Once pattern. Retained file+line metadata for production loss debugging (AWS environment priority over micro-optimization) |
 | 2026-01-18 | Completed API test coverage (latest_price, price_history, order_by_id) and enhanced WebSocket tests (reconnection, lifecycle) |
 | 2026-01-18 | Added small-scale arbitrage detection integration tests with real market data |
-| 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated DESIGN.md with Strategy, Telemetry, and Address Config sections |
+| 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated architecture.md with Strategy, Telemetry, and Address Config sections |
 | 2026-01-18 | Added comprehensive API test coverage: User Data (Positions, Balances, Trades) and Batch Operations (Place/Cancel) |
 | 2026-01-18 | Fixed API parameter issues: `chain_id` snake_case fix, handled null lists in responses |
-| 2026-01-18 | Updated test documentation and fixed CLAUDE.md commands |
+| 2026-01-18 | Updated test documentation and fixed agents.md commands (formerly CLAUDE.md) |
 | 2026-01-18 | API Compatibility Fixes: tradingMethod type (i32), added sign/safeRate/orderExpTime fields, fixed EIP-712 VerifyingContract to use CTF Exchange address, Fraction-based amount calculation, Serde camelCase verified, cancel order orderId confirmed |
 | 2026-01-18 | Implemented post-trade validation in RiskManager (slippage, execution time, P&L tracking, circuit breaker) |
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
@@ -185,17 +203,69 @@ referral_discount: 0.10, // 10% 邀请折扣
 OPINION_API_KEY=xxx
 OPINION_REST_URL=https://proxy.opinion.trade:8443/openapi/
 OPINION_WS_URL=wss://ws.opinion.trade
+OPINION_MASTER_MARKET_URL=https://...  # Comma-separated URLs allowed (frontend DevTools)
+OPINION_SCAN_ONLY=true                 # Disable order submission (scan-only mode)
 
 # Environment Selection
 OPINION_ENV=local  # local or aws (defaults to aws)
+OPINION_CHAIN_ID=56  # Optional override for market sweep (defaults to 56)
+OPINION_WS_CHANNEL=market.data.<pair>  # WS probe single channel
+OPINION_WS_CHANNELS=market.data.<pair1>,market.data.<pair2>  # WS probe multi-channel
+OPINION_WS_PROBE_SECS=20  # WS probe duration (seconds)
+WS probe raw payload: cargo run --bin ws_probe -- '{"action":"subscribe","channel":"..."}'
 
 # Proxy Configuration (local only)
 OPINION_PROXY_URL=http://127.0.0.1:7890  # FlClash proxy port
 
 # Blockchain
 BSC_RPC_URL=https://bsc-dataseed.binance.org
-PRIVATE_KEY=0x...
+OPINION_PRIVATE_KEY=0x...
+PRIVATE_KEY=0x...  # Fallback for legacy setups
 OPINION_EOA_ADDRESS=0x...
+
+# Data Collection (Phase 0 - SQLite Recorder)
+OPINION_DATA_ENABLED=true          # Enable/disable recorder (default: true)
+OPINION_DATA_DB_PATH=data/opinion-hft.sqlite  # Base DB path (date suffix added automatically)
+OPINION_DATA_WAL=true               # Enable WAL mode for concurrent reads/writes (default: true)
+OPINION_DATA_BATCH_SIZE=200         # Batch size before auto-flush (default: 200)
+OPINION_DATA_FLUSH_MS=1000         # Flush interval in milliseconds (default: 1000)
+OPINION_DATA_OB_DEPTH=10           # Orderbook depth to record (default: 10)
+OPINION_DATA_QUEUE_CAP=2000        # Event queue capacity (default: 2000)
+```
+
+## Data Collection (Phase 0 - SQLite Recorder)
+
+The bot includes a SQLite-based data collector for recording market data and confirmed trades.
+
+**Key Features:**
+- **Daily DB rotation**: Creates separate SQLite files per day (`data/opinion-{YYYY-MM-DD}.sqlite`)
+- **WAL mode**: Configurable Write-Ahead Logging for concurrent reads/writes
+- **Batched writes**: Async batch writer with configurable size/flush interval
+- **Source of truth**: Only records confirmed orders from `ConfirmationTracker` (on-chain verified), not unreliable WebSocket data
+
+**Configuration:**
+- Config struct: `src/config.rs::DataCollectionConfig`
+- Module: `src/data/recorder.rs`
+- Integration: `src/main.rs` - wired into confirmation loop
+
+**Schema:**
+- `orderbook_snapshots` - Market depth snapshots with timestamps
+- `orderbook_levels` - Individual bid/ask levels linked to snapshots
+- `confirmed_orders` - Verified order executions with position tracking
+
+**Usage:**
+```rust
+use opinion_hft::data::recorder::spawn_recorder;
+
+let data_config = DataCollectionConfig::from_env();
+let recorder_handle = spawn_recorder(data_config)
+    .await
+    .map(|(handle, _join)| handle);
+
+// In confirmation loop:
+if let Some(recorder) = &recorder_handle {
+    recorder.record_confirmed_order(&confirmed).await;
+}
 ```
 
 ## Testing Analysis (2026-01-18)
@@ -270,35 +340,35 @@ OPINION_EOA_ADDRESS=0x...
 #### Immediate Actions Required
 
 1. **Fix Test Amounts (P0 - Critical)**
-   ```rust
-   // ❌ WRONG - Below minimum
-   let price = 0.001;
-   let quantity = 200;  // Value = 2 USDT (below 1.30!)
-   
-   // ✅ CORRECT - Meet minimum
-   let price = 0.5;  // Mid-range realistic price
-   let quantity = 130;  // 130 * 0.5 = 65 USDT (above 1.30 minimum)
-   ```
+    ```rust
+    // ❌ WRONG - Below minimum
+    let price = 0.001;
+    let quantity = 200;  // Value = 2 USDT (below 1.30!)
+    
+    // ✅ CORRECT - Meet minimum
+    let price = 0.5;  // Mid-range realistic price
+    let quantity = 130;  // 130 * 0.5 = 65 USDT (above 1.30 minimum)
+    ```
 
 2. **Remove Extreme Price Orders**
-   - Delete or comment out ghost order placement (price = 0.001)
-   - Use prices that can actually execute (0.3 - 0.7 range)
+    - Delete or comment out ghost order placement (price = 0.001)
+    - Use prices that can actually execute (0.3 - 0.7 range)
 
 3. **Add Market Depth Validation**
-   ```rust
-   // Before placing order, check available liquidity
-   let orderbook = client.get_orderbook(token_id).await?;
-   let total_liquidity = sum_bid_liquidity(orderbook) + sum_ask_liquidity(orderbook);
-   if total_liquidity < 3.0 {  // Below test size
-       warn!("Insufficient liquidity: {:.2} USDT", total_liquidity);
-       return Ok(());
-   }
-   ```
+    ```rust
+    // Before placing order, check available liquidity
+    let orderbook = client.get_orderbook(token_id).await?;
+    let total_liquidity = sum_bid_liquidity(orderbook) + sum_ask_liquidity(orderbook);
+    if total_liquidity < 3.0 {  // Below test size
+        warn!("Insufficient liquidity: {:.2} USDT", total_liquidity);
+        return Ok(());
+    }
+    ```
 
 4. **Use Conservative Test Strategy**
-   - Test order flow with 1.5 USDT (not 65 USDT)
-   - Measure actual slippage in production conditions
-   - Validate minimum fill amount and execution quality
+    - Test order flow with 1.5 USDT (not 65 USDT)
+    - Measure actual slippage in production conditions
+    - Validate minimum fill amount and execution quality
 
 ---
 
@@ -307,21 +377,21 @@ OPINION_EOA_ADDRESS=0x...
 **When modifying integration tests, follow these rules:**
 
 1. **Minimum Order Amount**: All live tests MUST use **1.30 USDT minimum**
-   - Formula: `price * quantity >= 1.30`
-   - Recommended: Use 1.5 - 65 USDT range with prices 0.3 - 0.7
+    - Formula: `price * quantity >= 1.30`
+    - Recommended: Use 1.5 - 65 USDT range with prices 0.3 - 0.7
 
 2. **No Ghost Orders**: Never place orders that won't execute
-   - Minimum price: 0.3 for YES tokens
-   - Never use 0.001 or similar extreme values
+    - Minimum price: 0.3 for YES tokens
+    - Never use 0.001 or similar extreme values
 
 3. **Orderbook Awareness**: Check liquidity before placing orders
-   - Ensure total available liquidity is at least 10x the order size
-   - Fail fast if market is shallow
+    - Ensure total available liquidity is at least 10x the order size
+    - Fail fast if market is shallow
 
 4. **Realistic Test Prices**: Use actual market conditions
-   - Spread in prediction markets is typically 1-3%
-   - Test prices should be 0.3, 0.5, 0.7 (not 0.1, 0.9)
+    - Spread in prediction markets is typically 1-3%
+    - Test prices should be 0.3, 0.5, 0.7 (not 0.1, 0.9)
 
 5. **Measure Don't Just Assume**: Always log actual fill amounts, prices, and fees
-   - Calculate and report real P&L for each trade
-   - Use this data to improve strategy, not just pass/fail tests
+    - Calculate and report real P&L for each trade
+    - Use this data to improve strategy, not just pass/fail tests
