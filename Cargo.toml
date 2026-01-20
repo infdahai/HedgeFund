@@ -2,7 +2,7 @@
 name = "opinion-hft"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.90"
 description = "High-frequency trading framework for Opinion Trade prediction market on BNB Chain"
 license = "MIT"
 
@@ -58,6 +58,8 @@ anyhow = "1.0"
 hex = "0.4"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+polars = { version = "0.45", default-features = false, features = ["lazy", "parquet", "fmt", "dtype-struct", "dtype-date", "dtype-datetime", "dtype-time"] }
+rayon = "1.10"
 
 # Environment configuration
 dotenvy = "0.15"
