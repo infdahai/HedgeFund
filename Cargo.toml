@@ -14,11 +14,13 @@ futures = "0.3"
 # Ethereum / EIP-712
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
-alloy = { version = "0.3", features = [
+alloy = { version = "0.3", default-features = false, features = [
+    "std",
     "providers",
     "signers",
     "contract",
     "signer-local",
+    "reqwest-rustls-tls",
 ] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 
@@ -27,7 +29,7 @@ governor = "0.6"
 nonzero_ext = "0.3"
 
 # Networking
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rquest = { version = "5.1", features = ["json"] }
 rquest-util = { version = "2.2", features = ["emulation"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

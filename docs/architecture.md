@@ -1037,7 +1037,7 @@ See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
 
 #### 5.10.1 Logging (tracing)
 
-Structured logging with dual output (stdout + file) for production observability.
+Structured logging with stdout output and optional file output for production observability.
 
 **Log Levels:**
 - `ERROR`: System failures, critical errors
@@ -1046,7 +1046,7 @@ Structured logging with dual output (stdout + file) for production observability
 - `DEBUG`: Detailed API responses, internal state changes
 - `TRACE`: Very fine-grained execution details
 
-**Dual Output Architecture:**
+**Output Architecture:**
 
 ```
 Application Logs
@@ -1069,7 +1069,7 @@ Application Logs
                       │                       │
                       ▼                       ▼
                 Terminal Output       logs/opinion-hft.log.
-                                       YYYY-MM-DD
+                                       YYYY-MM-DD (optional)
 ```
 
 **Lifecycle Management:**
@@ -1077,7 +1077,7 @@ Application Logs
 ```rust
 pub struct TelemetryGuards {
     pub stdout: WorkerGuard,  // Must be held for logging lifetime
-    pub file: WorkerGuard,    // Must be held for logging lifetime
+    pub file: Option<WorkerGuard>,    // File guard when file logging is enabled
 }
 
 pub fn init_telemetry() -> TelemetryGuards {
@@ -1107,7 +1107,7 @@ pub fn init_telemetry() -> TelemetryGuards {
         .with(file_layer)
         .try_init()?;
     
-    TelemetryGuards { stdout: stdout_guard, file: file_guard }
+    TelemetryGuards { stdout: stdout_guard, file: Some(file_guard) }
 }
 ```
 
@@ -1131,6 +1131,10 @@ async fn main() -> Result<()> {
 **Configuration:**
 
 ```bash
+# File logging controls
+export OPINION_LOG_FILE_ENABLED=true
+export OPINION_LOG_DIR=logs
+
 # Log level filtering (default: info)
 export RUST_LOG=info,opinion_hft=debug
 
@@ -1678,14 +1682,14 @@ SQLite schema (current)
 
 Daily rotation
 
-New file naming: `data/opinion-{YYYY-MM-DD}.sqlite`
+New file naming: `{base}-{YYYY-MM-DD}.sqlite` (base comes from `OPINION_DATA_DB_PATH`)
 Rotation check: Before each insert, check if date changed vs current_db_date
 If rotated: Close old connection, create new DB, init schema, apply pragmas
 
 Env flags
 
 `OPINION_DATA_ENABLED` (default true)
-`OPINION_DATA_DB_PATH` (default data/opinion-hft.sqlite, base directory for daily DBs)
+`OPINION_DATA_DB_PATH` (default `data/opinion-hft.sqlite`, base path with date suffix added)
 `OPINION_DATA_WAL` (default true)
 `OPINION_DATA_BATCH_SIZE` (default 200)
 `OPINION_DATA_FLUSH_MS` (default 1000)

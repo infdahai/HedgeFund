@@ -88,18 +88,46 @@ pub struct Recorder {
     current_db_date: Option<String>,
 }
 
+fn build_daily_db_path(base_path: &str, date: &str) -> PathBuf {
+    let trimmed = base_path.trim();
+    let has_trailing_sep = trimmed.ends_with('/') || trimmed.ends_with('\\');
+    let base_path = if has_trailing_sep || trimmed.is_empty() {
+        PathBuf::from(trimmed).join("opinion-hft.sqlite")
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    let dir = base_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let file_name = base_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("opinion-hft.sqlite");
+    let file_path = Path::new(file_name);
+    let stem = file_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("opinion-hft");
+    let dated_name = match file_path.extension().and_then(|value| value.to_str()) {
+        Some(ext) => format!("{stem}-{date}.{ext}"),
+        None => format!("{stem}-{date}"),
+    };
+
+    dir.join(dated_name)
+}
+
 impl Recorder {
     pub fn new(config: DataCollectionConfig) -> SqlResult<Self> {
-        let db_dir = if let Some(path) = Path::new(&config.db_path).parent() {
-            path.to_path_buf()
-        } else {
-            PathBuf::from("data")
-        };
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let db_path = build_daily_db_path(&config.db_path, &today);
+        let db_dir = db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
 
         std::fs::create_dir_all(&db_dir).ok();
-
-        let today = Utc::now().format("%Y-%m-%d").to_string();
-        let db_path = db_dir.join(format!("opinion-{}.sqlite", today));
 
         let conn = Connection::open(&db_path)?;
         let current_db_date = Some(today.clone());
@@ -237,13 +265,11 @@ impl Recorder {
             return Ok(());
         }
 
-        let db_dir = if let Some(path) = Path::new(&self.config.db_path).parent() {
-            path.to_path_buf()
-        } else {
-            PathBuf::from("data")
-        };
-
-        let new_db_path = db_dir.join(format!("opinion-{}.sqlite", today));
+        let new_db_path = build_daily_db_path(&self.config.db_path, &today);
+        let db_dir = new_db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
 
         std::fs::create_dir_all(&db_dir).ok();
 

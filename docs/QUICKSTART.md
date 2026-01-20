@@ -30,6 +30,12 @@ OPINION_SCAN_ONLY=true  # optional safety switch
 # Proxy (local only)
 OPINION_PROXY_URL=http://127.0.0.1:7890
 
+# Data collection
+OPINION_DATA_DB_PATH=data/opinion-hft.sqlite
+
+# Logging
+OPINION_LOG_FILE_ENABLED=true
+
 # Blockchain
 BSC_RPC_URL=https://bsc-dataseed.binance.org
 PRIVATE_KEY=0x...
@@ -108,5 +114,6 @@ cargo run --release
 ## Next Steps
 
 - Read [architecture.md](architecture.md) for architecture details
+- See [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md) for systemd service setup
 - Check [agents.md](../agents.md) for development guidelines
 - Review existing tests for implementation patterns
