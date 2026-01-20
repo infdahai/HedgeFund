@@ -1717,6 +1717,232 @@ Max holding time: force exit if a position remains open beyond X minutes.
 
 ---
 
+## 11.2 Strategy Learning Roadmap (Structured Data Lake)
+
+Goal: enable a fast, reliable research loop without adding latency to execution.
+Avoid parsing human logs (`journalctl`) for analytics; emit structured data alongside logs.
+
+Priority order (current):
+- P0: Stage A (Local Structured Recorder)
+- P1: Stage C (Research Backend)
+- P2: Strategy iteration driven by Stage C results (see 11.1 Phase 1/2)
+- P3: Stage B (S3 Pipeline)
+- P4: Stage D/E (Optimistic Execution + Feature Layer)
+
+Rationale: without structured data, strategy work is guesswork. Capture data first, then analyze, then iterate.
+Strategic note: external limits (API TPS, chain confirmation) dominate latency. Avoid low-ROI micro-optimizations (e.g., swapping JSON libs) until data capture and analysis are in place.
+
+### Stage A: Local Structured Recorder (Parquet sidecar)
+
+Intent: keep SQLite for small, transactional data; move high-volume market snapshots to columnar files.
+
+- Keep SQLite for `confirmed_orders` only (small, high-value, transactional).
+- Add a `ParquetRecorder` that receives data via `tokio::mpsc` to avoid blocking the hot path.
+- Batch + rotate files: flush every N records or T seconds, rotate hourly or by size.
+- File layout example (Hive partitioning): `data/parquet/orderbook_snapshots_v1/date=YYYY-MM-DD/hour=HH/part-000.parquet`.
+- Do not parse `journalctl` for machine learning; use Parquet + schema.
+- Store bids/asks as nested lists inside the snapshot row to avoid joins.
+
+Stage A detailed design (P0):
+
+Scope:
+- Capture orderbook snapshots from REST refresh (high-quality baseline).
+- Capture scan stats per scan cycle (why opportunities were skipped).
+- Keep confirmed orders in SQLite (already implemented).
+- Defer per-opportunity skip reasons until after the first data pass.
+
+Data contracts (Parquet datasets):
+- `orderbook_snapshots` (full depth on REST refresh, nested bids/asks):
+  - `snapshot_id` (u64), `market_id` (string), `pair` (string), `outcome` (string)
+  - `source` (string: "rest"), `exchange_ts_us` (i64, optional), `local_recv_ts_us` (i64), `local_write_ts_us` (i64)
+  - `best_bid` (f64), `best_ask` (f64), `spread` (f64)
+  - `bids` (list<struct<p: f64, s: f64>>), `asks` (list<struct<p: f64, s: f64>>)
+  - `p`/`s` keep nested field metadata compact; document mapping in code.
+  - List order defines depth (index 0 = best).
+- `scan_stats` (one row per scan cycle):
+  - `scan_ts_us` (i64), `duration_us` (u64), `markets_scanned` (u64)
+  - `yesno_checked`/`yesno_found`/`yesno_missing_ask`/`yesno_cost_ge_one`
+  - `yesno_low_liquidity`/`yesno_below_min_notional`/`yesno_below_min_profit`
+  - `mint_sell_checked`/`mint_sell_found`/`mint_sell_missing_bid`/`mint_sell_revenue_le_one`
+  - `mint_sell_low_liquidity`/`mint_sell_below_min_notional`/`mint_sell_below_min_profit`
+  - `neg_risk_checked`/`neg_risk_found`/`neg_risk_missing_ask`/`neg_risk_cost_ge_one`
+  - `neg_risk_low_liquidity`/`neg_risk_below_min_notional`/`neg_risk_below_min_profit`
+
+MVP success criteria:
+- Parquet files produced without blocking the scan loop.
+- REST refresh snapshots captured with full depth (configurable).
+- Scan stats recorded every scan cycle.
+- No changes to execution logic.
+
+Snapshot ID:
+- Use `local_recv_ts_us` + a per-process atomic counter to ensure uniqueness.
+
+Timestamp policy:
+- Use microseconds for local timestamps to preserve ordering and internal jitter analysis.
+- Store exchange-provided timestamps when available (convert ms to us).
+
+Writer design:
+- Single background writer thread per dataset; no disk I/O or compression on the trading loop.
+- Run the writer in `std::thread` or `tokio::task::spawn_blocking` to avoid blocking Tokio workers.
+- Use `try_send` or drop-on-full policy to avoid blocking; increment `parquet_dropped_total` atomic counter.
+- Log a heartbeat every minute with the dropped count; alert if non-zero.
+- Batch flush by size and time; close file on rotate, open new writer.
+- Parse price/size strings inside the writer task (not on the hot path). Invalid values are skipped and counted.
+- Optional: pin the writer thread to a dedicated core only after measuring contention.
+
+Rotation policy:
+- Rotate hourly or when file exceeds a size threshold (default 100MB).
+- Directory structure uses Hive partitioning: `.../date=YYYY-MM-DD/hour=HH/`.
+- File name uses `part-000.parquet` with a monotonically increasing part index per partition.
+- Store `schema_version`, `git_commit`, `config_hash` as Parquet file metadata.
+
+Sampling policy:
+- Always record REST refresh snapshots (high quality).
+- Optional: add top-of-book snapshots from local WS book (later if needed).
+
+Config (new env keys):
+- `OPINION_PARQUET_ENABLED` (default false)
+- `OPINION_PARQUET_DIR` (default `data/parquet`)
+- `OPINION_PARQUET_BATCH_SIZE` (default 1000)
+- `OPINION_PARQUET_FLUSH_MS` (default 1000)
+- `OPINION_PARQUET_ROTATE_MB` (default 100)
+- `OPINION_PARQUET_COMPRESSION` (default `zstd`)
+- `OPINION_PARQUET_QUEUE_CAP` (default 4096)
+- `OPINION_PARQUET_HEARTBEAT_SECS` (default 60)
+
+Parquet implementation choice (current decision):
+- Primary: `polars` crate with `parquet` feature (columnar IO + compression).
+- Reason: higher DX, robust Parquet defaults (row groups, stats, encoding), still Arrow-compatible.
+- Constraint: project Rust version is 1.90; keep `polars` features minimal (`default-features = false`).
+
+Schema versioning approach:
+- Define a constant `PARQUET_SCHEMA_VERSION` (e.g., "v1.0.0").
+- Embed metadata keys: `schema_version`, `schema_hash`, `git_commit`, `config_hash`.
+- Dataset directory includes major version: `data/parquet/orderbook_snapshots_v1/date=YYYY-MM-DD/hour=HH/part-000.parquet`.
+- Backward compatible changes: add columns only, bump minor.
+- Incompatible changes: remove/rename columns, bump major and write to a new file prefix.
+
+Integration points:
+- `src/main.rs`: spawn parquet recorder next to SQLite recorder.
+- On REST orderbook refresh in `MarketScanner`, call `parquet.record_orderbook(...)`.
+- After each scan cycle, record `ArbScanStats` (already available via `detector.drain_stats()`).
+
+Validation/tests:
+- Schema test: write and read a small Parquet file, confirm column types and nested list layout.
+- Rotation test: verify file roll-over on size/time.
+- Drop policy test: ensure trading loop never blocks when queue is full and dropped counter increments.
+- Local verification: see `docs/VERIFICATION.md` (use `.venv/bin/python`).
+
+Implementation notes:
+- Parquet is columnar (fast analytics, high compression); SQLite is row-oriented (good for small OLTP tables).
+- Never write to disk on the trading loop. Use a background writer.
+- Nested list assembly in Polars is still verbose; keep conversion in the writer thread and test the schema early.
+- Buffer guideline: 1000 records or 1 second per flush (tune later).
+- Rotation guideline: hourly or 100MB per file to keep analysis chunks small.
+
+Example event (analysis-ready):
+
+```rust
+struct StrategySnapshot {
+    ts_us: i64,
+    market_id: String,
+    outcome: String,
+    best_bid: f64,
+    best_ask: f64,
+    spread: f64,
+    decision: bool,
+    latency_us: u64,
+}
+```
+
+### Stage B: Data Pipeline (EC2 -> S3)
+
+Intent: decouple trading node from data ingestion.
+
+- Use a sidecar uploader (cron, systemd timer, or Filebeat/Vector).
+- Watch rotated Parquet files, upload to S3, then delete locally.
+- Keep the trading process unaware of S3 credentials.
+
+Minimal pipeline (cron or systemd timer):
+
+```bash
+# Upload completed files (example: move all rotated files, keep current hour local)
+aws s3 mv "data/parquet/orderbook_snapshots_v1/" "s3://your-bucket/orderbook_snapshots_v1/" --exclude "*" --include "date=*/hour=*/*.parquet"
+```
+
+### Stage C: Research Backend (offline)
+
+Intent: fast iteration on strategy without touching production.
+
+- Storage: S3 bucket of Parquet files.
+- Compute: local workstation or separate EC2.
+- Query: DuckDB or ClickHouse (fast scan + SQL).
+- Output: parameter updates, not ad-hoc runtime changes.
+
+Example analysis (DuckDB):
+
+```python
+import duckdb
+df = duckdb.query(
+    "SELECT * FROM 'data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet' WHERE spread > 0.05"
+).df()
+```
+
+Questions to answer first:
+- Opportunity cost: when total_spend < 1.0 but no trade executed, would it have been profitable?
+- Slippage distribution: snapshot_price vs execution_price, and how often it exceeds limits.
+
+### Stage D: Execution Evolution (Optimistic Execution)
+
+Intent: reduce idle time during on-chain confirmation delays.
+
+- Maintain a "virtual balance" updated on WS `status="Finish"`.
+- Trade on virtual balance immediately.
+- Reconcile with on-chain `balanceOf` after 3-5s.
+- On mismatch, emit a reconciliation event and apply risk controls.
+
+Guardrails:
+- Delay this stage until the bot has been stable for weeks and you understand reorg risk.
+- Treat reconciliation mismatches as high-severity risk events.
+
+### Stage E: Feature Layer for Strategy Learning
+
+Intent: separate feature engineering from execution logic.
+
+- Add a `FeatureExtractor` that converts orderbook snapshots to `MarketFeatures`.
+- Record `(MarketFeatures, Decision, Outcome)` tuples to Parquet.
+- Keep strategy logic consuming features, not raw orderbooks.
+
+Example features:
+
+```rust
+struct MarketFeatures {
+    spread_bps: f64,
+    imbalance: f64,
+    volatility_1m: f64,
+    implied_probability: f64,
+}
+```
+
+Deferral guidance:
+- Only consider this after you have weeks of clean Parquet data.
+- Early-stage rule-based strategies are easier to debug and often outperform premature ML.
+
+### Additional Roadmap Items (Reliability & Reproducibility)
+
+- Data lineage + schema versioning: record `git_commit`, `config_hash`, and `schema_version` in both SQLite and Parquet outputs.
+- Orderbook integrity: track WS sequence/gaps and periodically resync with REST snapshots to avoid stale books.
+- Adaptive rate limiting: dynamic backoff based on 429/5xx rates; record rate-limit stats as metrics.
+- Replay harness parity: deterministic replay that consumes the same event bus as live (WS + REST snapshots).
+- Health/kill-switch hardening: "collect-only" mode and alerts on WS staleness, RPC failover, or balance reconciliation mismatches.
+- Allocator evaluation (optional): consider jemalloc/mimalloc only if profiling shows allocator contention; keep it feature-gated and opt-in.
+
+Non-goals for this phase:
+- No direct ML inference in the hot path.
+- No S3 upload from the trading process.
+
+---
+
 ## 12. New Session Prompt
 
 Copy and paste the following block to start a new implementation session:

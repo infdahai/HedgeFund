@@ -4,6 +4,8 @@ use opinion_hft::telemetry::init_telemetry;
 use opinion_hft::execution::gateway::OrderGateway;
 use opinion_hft::data::rest::OpinionClient;
 use opinion_hft::data::recorder::spawn_recorder;
+#[cfg(feature = "polars")]
+use opinion_hft::data::recorder::parquet::spawn_parquet_recorder;
 use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
 use opinion_hft::chain::client::ChainClient;
 use opinion_hft::auth::Eip712Signer;
@@ -166,9 +168,15 @@ async fn main() -> Result<()> {
         config.chain.batch_buffer_ms,
     );
     let data_config = config.data.clone();
-    let recorder_handle = spawn_recorder(data_config)
-        .await
-        .map(|(handle, _join)| handle);
+    let (recorder_handle, mut recorder_join) = match spawn_recorder(data_config).await {
+        Some((handle, join)) => (Some(handle), Some(join)),
+        None => (None, None),
+    };
+    #[cfg(feature = "polars")]
+    let (parquet_handle, mut parquet_join) = match spawn_parquet_recorder(config.parquet.clone()) {
+        Some((handle, join)) => (Some(handle), Some(join)),
+        None => (None, None),
+    };
     let recorder_handle_confirm = recorder_handle.clone();
     let confirmation_tracker = Arc::new(confirmation_tracker);
     let risk_manager = Arc::new(Mutex::new(RiskManager::new(config.risk.clone(), config.environment, rest_client.clone())));
@@ -195,6 +203,8 @@ async fn main() -> Result<()> {
     let market_pairs_scan = market_pairs.clone();
     
     let recorder_handle_scanner = recorder_handle.clone();
+    #[cfg(feature = "polars")]
+    let parquet_handle_scanner = parquet_handle.clone();
     tokio::spawn(async move {
         info!("Arbitrage Scanner started...");
         let mut scanner = MarketScanner::new(scanner_client, config.chain.chain_id);
@@ -397,6 +407,15 @@ async fn main() -> Result<()> {
                                         .record_orderbook(&outcome.outcome_id, &outcome.pair, &raw)
                                         .await;
                                 }
+                                #[cfg(feature = "polars")]
+                                if let Some(recorder) = &parquet_handle_scanner {
+                                    recorder.record_orderbook(
+                                        &scan.market_id,
+                                        &outcome.pair,
+                                        &outcome.outcome_id,
+                                        &raw,
+                                    );
+                                }
                                 orderbook_store_scan.upsert(&outcome.pair, ob.clone());
                                 orderbook_rest_refresh += 1;
                                 ob
@@ -454,6 +473,10 @@ async fn main() -> Result<()> {
                                     .record_orderbook(&market.id, &market.yes_pair, &raw)
                                     .await;
                             }
+                            #[cfg(feature = "polars")]
+                            if let Some(recorder) = &parquet_handle_scanner {
+                                recorder.record_orderbook(&market.id, &market.yes_pair, "YES", &raw);
+                            }
                             orderbook_store_scan.upsert(&market.yes_pair, ob.clone());
                             orderbook_rest_refresh += 1;
                             ob
@@ -486,6 +509,10 @@ async fn main() -> Result<()> {
                                 recorder
                                     .record_orderbook(&market.id, &market.no_pair, &raw)
                                     .await;
+                            }
+                            #[cfg(feature = "polars")]
+                            if let Some(recorder) = &parquet_handle_scanner {
+                                recorder.record_orderbook(&market.id, &market.no_pair, "NO", &raw);
                             }
                             orderbook_store_scan.upsert(&market.no_pair, ob.clone());
                             orderbook_rest_refresh += 1;
@@ -560,10 +587,69 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 9. Run Gateway
-    if let Err(e) = gateway.run(Some(strategy_rx)).await {
-        error!("Gateway fatal error: {}", e);
+    // 9. Run Gateway (with shutdown handling)
+    tokio::select! {
+        result = gateway.run(Some(strategy_rx)) => {
+            if let Err(e) = result {
+                error!("Gateway fatal error: {}", e);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received...");
+        }
     }
 
+    shutdown_sqlite(&recorder_handle, &mut recorder_join).await;
+    #[cfg(feature = "polars")]
+    shutdown_parquet(&parquet_handle, &mut parquet_join).await;
+
     Ok(())
+}
+
+async fn shutdown_sqlite(
+    handle: &Option<opinion_hft::data::recorder::RecorderHandle>,
+    join: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(handle) = handle {
+        info!("Flushing sqlite buffer...");
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle.shutdown()).await;
+    }
+
+    let Some(join) = join.take() else {
+        return;
+    };
+
+    match tokio::time::timeout(Duration::from_secs(5), join).await {
+        Ok(Ok(())) => info!("SQLite recorder stopped."),
+        Ok(Err(err)) => warn!("SQLite recorder join failed: {}", err),
+        Err(_) => warn!("SQLite recorder join timed out."),
+    }
+}
+
+#[cfg(feature = "polars")]
+async fn shutdown_parquet(
+    handle: &Option<opinion_hft::data::recorder::parquet::ParquetRecorderHandle>,
+    join: &mut Option<std::thread::JoinHandle<()>>,
+) {
+    if let Some(handle) = handle {
+        info!("Flushing parquet buffer...");
+        handle.shutdown();
+    }
+
+    let Some(join) = join.take() else {
+        return;
+    };
+
+    let join_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || join.join()),
+    )
+    .await;
+
+    match join_result {
+        Ok(Ok(Ok(()))) => info!("Parquet recorder stopped."),
+        Ok(Ok(Err(_))) => warn!("Parquet recorder panicked during shutdown."),
+        Ok(Err(err)) => warn!("Parquet recorder join failed: {}", err),
+        Err(_) => warn!("Parquet recorder join timed out."),
+    }
 }

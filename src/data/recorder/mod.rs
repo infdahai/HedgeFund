@@ -10,6 +10,9 @@ use crate::config::DataCollectionConfig;
 use crate::data::rest::models::TokenOrderbook;
 use crate::execution::confirmation::ConfirmedOrder;
 
+#[cfg(feature = "polars")]
+pub mod parquet;
+
 #[derive(Debug, Clone)]
 pub struct RecorderHandle {
     tx: mpsc::Sender<RecordEvent>,
@@ -54,6 +57,10 @@ impl RecorderHandle {
             }))
             .await;
     }
+
+    pub async fn shutdown(&self) {
+        let _ = self.tx.send(RecordEvent::Shutdown).await;
+    }
 }
 
 #[derive(Debug)]
@@ -80,6 +87,7 @@ pub enum RecordEvent {
         asks: Vec<(String, String)>,
     },
     ConfirmedOrder(ConfirmedOrderRecord),
+    Shutdown,
 }
 
 pub struct Recorder {
@@ -306,6 +314,7 @@ async fn flush_events(recorder: &Arc<Mutex<Recorder>>, buffer: &mut Vec<RecordEv
                     tracing::error!("Failed to insert confirmed order: {}", err);
                 }
             }
+            RecordEvent::Shutdown => {}
         }
     }
 }
@@ -337,6 +346,12 @@ pub async fn spawn_recorder(
             tokio::select! {
                 maybe_event = rx.recv() => {
                     if let Some(event) = maybe_event {
+                        if matches!(event, RecordEvent::Shutdown) {
+                            if !buffer.is_empty() {
+                                flush_events(&recorder, &mut buffer).await;
+                            }
+                            break;
+                        }
                         buffer.push(event);
                         if buffer.len() >= config.batch_size {
                             flush_events(&recorder, &mut buffer).await;

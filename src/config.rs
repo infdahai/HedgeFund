@@ -71,6 +71,8 @@ pub struct Config {
     pub environment: Environment,
 
     pub data: DataCollectionConfig,
+
+    pub parquet: ParquetConfig,
 }
 
 /// Risk management configuration.
@@ -109,6 +111,17 @@ pub struct DataCollectionConfig {
     pub flush_interval_ms: u64,
     pub orderbook_depth: usize,
     pub queue_capacity: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParquetConfig {
+    pub enabled: bool,
+    pub dir: String,
+    pub batch_size: usize,
+    pub flush_interval_ms: u64,
+    pub queue_capacity: usize,
+    pub compression: String,
+    pub heartbeat_interval_secs: u64,
 }
 
 impl DataCollectionConfig {
@@ -170,6 +183,69 @@ impl Default for DataCollectionConfig {
             flush_interval_ms: 1000,
             orderbook_depth: 10,
             queue_capacity: 2000,
+        }
+    }
+}
+
+impl ParquetConfig {
+    pub fn from_env() -> Self {
+        let enabled = std::env::var("OPINION_PARQUET_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        let dir = std::env::var("OPINION_PARQUET_DIR")
+            .ok()
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| "data/parquet/orderbook_snapshots_v1".to_string());
+
+        let batch_size = std::env::var("OPINION_PARQUET_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1000);
+
+        let flush_interval_ms = std::env::var("OPINION_PARQUET_FLUSH_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1000);
+
+        let queue_capacity = std::env::var("OPINION_PARQUET_QUEUE_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(4096);
+
+        let compression = std::env::var("OPINION_PARQUET_COMPRESSION")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "zstd".to_string());
+
+        let heartbeat_interval_secs = std::env::var("OPINION_PARQUET_HEARTBEAT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+
+        Self {
+            enabled,
+            dir,
+            batch_size,
+            flush_interval_ms,
+            queue_capacity,
+            compression,
+            heartbeat_interval_secs,
+        }
+    }
+}
+
+impl Default for ParquetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: "data/parquet/orderbook_snapshots_v1".to_string(),
+            batch_size: 1000,
+            flush_interval_ms: 1000,
+            queue_capacity: 4096,
+            compression: "zstd".to_string(),
+            heartbeat_interval_secs: 60,
         }
     }
 }
@@ -542,6 +618,7 @@ impl Config {
             .unwrap_or_default();
 
         let data_config = DataCollectionConfig::from_env();
+        let parquet_config = ParquetConfig::from_env();
         let scan_only = parse_bool_env(std::env::var("OPINION_SCAN_ONLY").ok());
 
         let mut builder = Config::builder()
@@ -550,7 +627,8 @@ impl Config {
             .websocket_url(ws_url)
             .rest_base_url(rest_url)
             .environment(environment)
-            .data_collection(data_config);
+            .data_collection(data_config)
+            .parquet(parquet_config);
 
         if !private_key.expose_secret().is_empty() {
             builder.config.chain.private_key = private_key;
@@ -621,6 +699,11 @@ impl ConfigBuilder {
 
     pub fn data_collection(mut self, data: DataCollectionConfig) -> Self {
         self.config.data = data;
+        self
+    }
+
+    pub fn parquet(mut self, config: ParquetConfig) -> Self {
+        self.config.parquet = config;
         self
     }
 
