@@ -32,10 +32,14 @@ pub struct ArbitrageOpportunity {
     pub arb_type: ArbitrageType,
     /// Market ID
     pub market_id: String,
-    /// Total cost to execute (should be < 1.0 for profit)
+    /// Unit cost (sum of prices) before fees
     pub total_cost: f64,
-    /// Gross profit rate before fees (1.0 - total_cost)
+    /// Total spend including fees for max_size
+    pub total_spend: f64,
+    /// Gross profit rate before fees (unit payout vs unit cost)
     pub gross_profit_rate: f64,
+    /// Net profit in absolute terms for max_size
+    pub net_profit_abs: f64,
     /// Net profit rate after estimated fees
     pub net_profit_rate: f64,
     /// Maximum executable size (limited by liquidity)
@@ -79,6 +83,10 @@ pub struct ArbitrageConfig {
     pub min_profit_rate: f64,
     /// Minimum liquidity required per leg
     pub min_liquidity: f64,
+    /// Minimum notional per order (USDT)
+    pub min_order_notional: f64,
+    /// Minimum fee per order (USDT)
+    pub min_fee: f64,
     /// Base topic fee rate (usually 0.02 for 2%)
     pub topic_fee_rate: f64,
     /// Referral discount (e.g., 0.10 for 10% rebate)
@@ -90,11 +98,13 @@ pub struct ArbitrageConfig {
 impl Default for ArbitrageConfig {
     fn default() -> Self {
         Self {
-            min_profit_rate: 0.005,  // 0.5% minimum profit
-            min_liquidity: 100.0,    // Minimum 100 units
-            topic_fee_rate: 0.02,    // 2% max fee base
-            referral_discount: 0.10, // 10% rebate
-            max_slippage: 0.01,      // 1% max slippage
+            min_profit_rate: 0.005, // 0.5% minimum profit
+            min_liquidity: 100.0,   // Minimum 100 units
+            min_order_notional: 1.30, // API minimum order notional
+            min_fee: 0.50,          // API minimum fee per order
+            topic_fee_rate: 0.02,   // 2% max fee base
+            referral_discount: 0.10,// 10% rebate
+            max_slippage: 0.01,     // 1% max slippage
         }
     }
 }
@@ -109,9 +119,116 @@ impl ArbitrageConfig {
         // We apply discounts: (1 - referral_discount)
         let base_fee = self.topic_fee_rate * price * (1.0 - price);
 
-        // Opinion has a $0.50 minimum fee, but for rate calculation we use the curve first.
-        // The actual fee cost check needs the amount, which we do in detection.
+        // Minimum fee is applied at the notional level during detection.
         base_fee * (1.0 - self.referral_discount)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ArbScanStats {
+    pub yesno_checked: u64,
+    pub yesno_missing_ask: u64,
+    pub yesno_cost_ge_one: u64,
+    pub yesno_low_liquidity: u64,
+    pub yesno_below_min_notional: u64,
+    pub yesno_below_min_profit: u64,
+    pub yesno_found: u64,
+    pub yesno_best_overpay: f64,
+    pub mint_sell_checked: u64,
+    pub mint_sell_missing_bid: u64,
+    pub mint_sell_revenue_le_one: u64,
+    pub mint_sell_low_liquidity: u64,
+    pub mint_sell_below_min_notional: u64,
+    pub mint_sell_below_min_profit: u64,
+    pub mint_sell_found: u64,
+    pub mint_sell_best_shortfall: f64,
+    pub neg_risk_checked: u64,
+    pub neg_risk_missing_ask: u64,
+    pub neg_risk_cost_ge_one: u64,
+    pub neg_risk_low_liquidity: u64,
+    pub neg_risk_below_min_notional: u64,
+    pub neg_risk_below_min_profit: u64,
+    pub neg_risk_found: u64,
+    pub neg_risk_best_overpay: f64,
+}
+
+impl ArbScanStats {
+    pub fn summary(&self) -> String {
+        let yesno_overpay = if self.yesno_best_overpay.is_finite() {
+            format!("{:.6}", self.yesno_best_overpay)
+        } else {
+            "n/a".to_string()
+        };
+        let mint_shortfall = if self.mint_sell_best_shortfall.is_finite() {
+            format!("{:.6}", self.mint_sell_best_shortfall)
+        } else {
+            "n/a".to_string()
+        };
+        let neg_risk_overpay = if self.neg_risk_best_overpay.is_finite() {
+            format!("{:.6}", self.neg_risk_best_overpay)
+        } else {
+            "n/a".to_string()
+        };
+        format!(
+            "yesno: checked={}, found={}, no_ask={}, cost>=1={}, low_liq={}, min_notional={}, min_profit={}, best_overpay={}; \
+mint_sell: checked={}, found={}, no_bid={}, revenue<=1={}, low_liq={}, min_notional={}, min_profit={}, best_shortfall={}; \
+neg_risk: checked={}, found={}, no_ask={}, cost>=1={}, low_liq={}, min_notional={}, min_profit={}, best_overpay={}",
+            self.yesno_checked,
+            self.yesno_found,
+            self.yesno_missing_ask,
+            self.yesno_cost_ge_one,
+            self.yesno_low_liquidity,
+            self.yesno_below_min_notional,
+            self.yesno_below_min_profit,
+            yesno_overpay,
+            self.mint_sell_checked,
+            self.mint_sell_found,
+            self.mint_sell_missing_bid,
+            self.mint_sell_revenue_le_one,
+            self.mint_sell_low_liquidity,
+            self.mint_sell_below_min_notional,
+            self.mint_sell_below_min_profit,
+            mint_shortfall,
+            self.neg_risk_checked,
+            self.neg_risk_found,
+            self.neg_risk_missing_ask,
+            self.neg_risk_cost_ge_one,
+            self.neg_risk_low_liquidity,
+            self.neg_risk_below_min_notional,
+            self.neg_risk_below_min_profit,
+            neg_risk_overpay
+        )
+    }
+}
+
+impl Default for ArbScanStats {
+    fn default() -> Self {
+        Self {
+            yesno_checked: 0,
+            yesno_missing_ask: 0,
+            yesno_cost_ge_one: 0,
+            yesno_low_liquidity: 0,
+            yesno_below_min_notional: 0,
+            yesno_below_min_profit: 0,
+            yesno_found: 0,
+            yesno_best_overpay: f64::INFINITY,
+            mint_sell_checked: 0,
+            mint_sell_missing_bid: 0,
+            mint_sell_revenue_le_one: 0,
+            mint_sell_low_liquidity: 0,
+            mint_sell_below_min_notional: 0,
+            mint_sell_below_min_profit: 0,
+            mint_sell_found: 0,
+            mint_sell_best_shortfall: f64::INFINITY,
+            neg_risk_checked: 0,
+            neg_risk_missing_ask: 0,
+            neg_risk_cost_ge_one: 0,
+            neg_risk_low_liquidity: 0,
+            neg_risk_below_min_notional: 0,
+            neg_risk_below_min_profit: 0,
+            neg_risk_found: 0,
+            neg_risk_best_overpay: f64::INFINITY,
+        }
     }
 }
 
@@ -119,6 +236,7 @@ impl ArbitrageConfig {
 pub struct ArbitrageDetector {
     config: ArbitrageConfig,
     opportunity_counter: u64,
+    stats: ArbScanStats,
 }
 
 impl ArbitrageDetector {
@@ -127,12 +245,17 @@ impl ArbitrageDetector {
         Self {
             config,
             opportunity_counter: 0,
+            stats: ArbScanStats::default(),
         }
     }
 
     /// Create with default configuration.
     pub fn with_defaults() -> Self {
         Self::new(ArbitrageConfig::default())
+    }
+
+    pub fn drain_stats(&mut self) -> ArbScanStats {
+        std::mem::take(&mut self.stats)
     }
 
     /// Detect Yes/No arbitrage opportunity in a binary market.
@@ -144,13 +267,32 @@ impl ArbitrageDetector {
         yes_orderbook: &MarketOrderbook,
         no_orderbook: &MarketOrderbook,
     ) -> Option<ArbitrageOpportunity> {
-        let yes_ask = yes_orderbook.best_ask()?;
-        let no_ask = no_orderbook.best_ask()?;
+        self.stats.yesno_checked += 1;
+
+        let yes_ask = match yes_orderbook.best_ask() {
+            Some(price) => price,
+            None => {
+                self.stats.yesno_missing_ask += 1;
+                return None;
+            }
+        };
+        let no_ask = match no_orderbook.best_ask() {
+            Some(price) => price,
+            None => {
+                self.stats.yesno_missing_ask += 1;
+                return None;
+            }
+        };
 
         let total_cost_unit = yes_ask + no_ask;
-
+        
         // No opportunity if cost >= 1.0
         if total_cost_unit >= 1.0 {
+            self.stats.yesno_cost_ge_one += 1;
+            let overpay = total_cost_unit - 1.0;
+            if overpay < self.stats.yesno_best_overpay {
+                self.stats.yesno_best_overpay = overpay;
+            }
             return None;
         }
 
@@ -161,6 +303,15 @@ impl ArbitrageDetector {
 
         // Check minimum liquidity
         if max_size < self.config.min_liquidity {
+            self.stats.yesno_low_liquidity += 1;
+            return None;
+        }
+
+        let min_size_yes = self.config.min_order_notional / yes_ask;
+        let min_size_no = self.config.min_order_notional / no_ask;
+        let min_required_size = min_size_yes.max(min_size_no);
+        if max_size < min_required_size {
+            self.stats.yesno_below_min_notional += 1;
             return None;
         }
 
@@ -168,35 +319,47 @@ impl ArbitrageDetector {
         // Fee = Rate * Notional. Notional = Price * Size.
         let yes_fee_rate = self.config.calculate_fee_rate(yes_ask);
         let no_fee_rate = self.config.calculate_fee_rate(no_ask);
-
+        
         let yes_cost = yes_ask * max_size;
         let no_cost = no_ask * max_size;
-
-        // Apply minimum fee floor ($0.50) floor per order
-        // Assuming 1 unit = 1 USDT for simplicity in hft context
-        let yes_fee = (yes_cost * yes_fee_rate).max(0.5);
-        let no_fee = (no_cost * no_fee_rate).max(0.5);
-
+        
+        // Apply minimum fee floor per order
+        let yes_fee = (yes_cost * yes_fee_rate).max(self.config.min_fee);
+        let no_fee = (no_cost * no_fee_rate).max(self.config.min_fee);
+        
         let total_spend = yes_cost + no_cost + yes_fee + no_fee;
         let total_payout = 1.0 * max_size; // Winning side pays 1.0, losing pays 0.0. You hold both, so 1.0 * size.
-
+        
         let net_profit_abs = total_payout - total_spend;
-        let net_profit_rate = net_profit_abs / total_spend;
+        let net_profit_rate = if total_spend > 0.0 {
+            net_profit_abs / total_spend
+        } else {
+            0.0
+        };
 
         // Check minimum profit threshold
         if net_profit_rate < self.config.min_profit_rate {
+            self.stats.yesno_below_min_profit += 1;
             return None;
         }
 
         self.opportunity_counter += 1;
         let id = format!("arb-yesno-{}-{}", market.id, self.opportunity_counter);
+        self.stats.yesno_found += 1;
+        let gross_profit_rate = if total_cost_unit > 0.0 {
+            (1.0 - total_cost_unit) / total_cost_unit
+        } else {
+            0.0
+        };
 
         Some(ArbitrageOpportunity {
             id,
             arb_type: ArbitrageType::YesNo,
             market_id: market.id.clone(),
             total_cost: total_cost_unit,
-            gross_profit_rate: 1.0 - total_cost_unit,
+            total_spend,
+            gross_profit_rate,
+            net_profit_abs,
             net_profit_rate,
             max_size,
             legs: vec![
@@ -237,26 +400,32 @@ impl ArbitrageDetector {
             return None;
         }
 
+        self.stats.neg_risk_checked += 1;
+
         // Calculate total cost to buy all outcomes
         let mut total_cost = 0.0;
         let mut min_liquidity = f64::MAX;
+        let mut min_required_size = 0.0_f64;
         let mut legs = Vec::new();
 
         for outcome in outcomes {
-            let ask = outcome.orderbook.best_ask()?;
-            let liquidity = outcome
-                .orderbook
-                .asks
-                .first()
-                .map(|a| a.size)
-                .unwrap_or(0.0);
+            let ask = match outcome.orderbook.best_ask() {
+                Some(price) => price,
+                None => {
+                    self.stats.neg_risk_missing_ask += 1;
+                    return None;
+                }
+            };
+            let liquidity = outcome.orderbook.asks.first().map(|a| a.size).unwrap_or(0.0);
 
             if liquidity < self.config.min_liquidity {
+                self.stats.neg_risk_low_liquidity += 1;
                 return None; // Insufficient liquidity in one leg
             }
 
             total_cost += ask;
             min_liquidity = min_liquidity.min(liquidity);
+            min_required_size = min_required_size.max(self.config.min_order_notional / ask);
 
             legs.push(ArbitrageLeg {
                 pair: outcome.pair.clone(),
@@ -270,43 +439,67 @@ impl ArbitrageDetector {
 
         // No opportunity if cost >= 1.0
         if total_cost >= 1.0 {
+            self.stats.neg_risk_cost_ge_one += 1;
+            let overpay = total_cost - 1.0;
+            if overpay < self.stats.neg_risk_best_overpay {
+                self.stats.neg_risk_best_overpay = overpay;
+            }
             return None;
         }
 
-        let gross_profit = 1.0 - total_cost;
+        if min_liquidity < min_required_size {
+            self.stats.neg_risk_below_min_notional += 1;
+            return None;
+        }
+
+        let exec_size = min_liquidity;
+        let gross_profit_rate = if total_cost > 0.0 {
+            (1.0 - total_cost) / total_cost
+        } else {
+            0.0
+        };
 
         // Calculate fees for all legs based on their specific prices
-        let total_fees: f64 = legs
-            .iter()
-            .map(|leg| {
-                let fee_rate = self.config.calculate_fee_rate(leg.price);
-                // Simplified for rate check: fee_cost = price * fee_rate
-                leg.price * fee_rate
-            })
-            .sum();
+        let mut total_spend = 0.0;
+        for leg in &legs {
+            let fee_rate = self.config.calculate_fee_rate(leg.price);
+            let cost = leg.price * exec_size;
+            let fee = (cost * fee_rate).max(self.config.min_fee);
+            total_spend += cost + fee;
+        }
 
-        let net_profit = gross_profit - total_fees;
+        let total_payout = 1.0 * exec_size;
+        let net_profit_abs = total_payout - total_spend;
+        let net_profit_rate = if total_spend > 0.0 {
+            net_profit_abs / total_spend
+        } else {
+            0.0
+        };
 
-        if net_profit < self.config.min_profit_rate {
+        if net_profit_rate < self.config.min_profit_rate {
+            self.stats.neg_risk_below_min_profit += 1;
             return None;
         }
 
         // Set size for all legs
         for leg in &mut legs {
-            leg.size = min_liquidity;
+            leg.size = exec_size;
         }
 
         self.opportunity_counter += 1;
         let id = format!("arb-negrisk-{}-{}", market_id, self.opportunity_counter);
+        self.stats.neg_risk_found += 1;
 
         Some(ArbitrageOpportunity {
             id,
             arb_type: ArbitrageType::NegRisk,
             market_id: market_id.to_string(),
             total_cost,
-            gross_profit_rate: gross_profit,
-            net_profit_rate: net_profit,
-            max_size: min_liquidity,
+            total_spend,
+            gross_profit_rate,
+            net_profit_abs,
+            net_profit_rate,
+            max_size: exec_size,
             legs,
             detected_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -340,16 +533,30 @@ impl ArbitrageDetector {
         let bid_price = bid + 0.1;
         let ask_price = ask - 0.1;
 
+        let exec_size = orderbook.bids.first().map(|b| b.size).unwrap_or(0.0);
+        if exec_size <= 0.0 {
+            return None;
+        }
+
         // Potential profit from placing orders inside the spread
         let spread_captured = ask_price - bid_price;
+        let gross_profit_rate = spread_captured / bid_price;
 
         // Calculate fees for both legs
-        let bid_fee = bid_price * self.config.calculate_fee_rate(bid_price);
-        let ask_fee = ask_price * self.config.calculate_fee_rate(ask_price);
+        let bid_cost = bid_price * exec_size;
+        let ask_revenue = ask_price * exec_size;
+        let bid_fee = (bid_cost * self.config.calculate_fee_rate(bid_price)).max(self.config.min_fee);
+        let ask_fee = (ask_revenue * self.config.calculate_fee_rate(ask_price)).max(self.config.min_fee);
 
-        let net_profit = spread_captured - bid_fee - ask_fee;
+        let total_spend = bid_cost + bid_fee + ask_fee;
+        let net_profit_abs = (ask_revenue - bid_cost) - (bid_fee + ask_fee);
+        let net_profit_rate = if total_spend > 0.0 {
+            net_profit_abs / total_spend
+        } else {
+            0.0
+        };
 
-        if net_profit < self.config.min_profit_rate {
+        if net_profit_rate < self.config.min_profit_rate {
             return None;
         }
 
@@ -370,9 +577,11 @@ impl ArbitrageDetector {
             arb_type: ArbitrageType::SpreadAnomaly,
             market_id: market.id.clone(),
             total_cost: 0.0, // Not applicable for spread arb
-            gross_profit_rate: spread_captured,
-            net_profit_rate: net_profit,
-            max_size: orderbook.bids.first().map(|b| b.size).unwrap_or(0.0),
+            total_spend,
+            gross_profit_rate,
+            net_profit_abs,
+            net_profit_rate,
+            max_size: exec_size,
             legs: vec![
                 ArbitrageLeg {
                     pair: orderbook.pair.clone(),
@@ -409,13 +618,32 @@ impl ArbitrageDetector {
         yes_orderbook: &MarketOrderbook,
         no_orderbook: &MarketOrderbook,
     ) -> Option<ArbitrageOpportunity> {
-        let yes_bid = yes_orderbook.best_bid()?;
-        let no_bid = no_orderbook.best_bid()?;
+        self.stats.mint_sell_checked += 1;
+
+        let yes_bid = match yes_orderbook.best_bid() {
+            Some(price) => price,
+            None => {
+                self.stats.mint_sell_missing_bid += 1;
+                return None;
+            }
+        };
+        let no_bid = match no_orderbook.best_bid() {
+            Some(price) => price,
+            None => {
+                self.stats.mint_sell_missing_bid += 1;
+                return None;
+            }
+        };
 
         let total_revenue = yes_bid + no_bid;
-
+        
         // No opportunity if revenue <= 1.0
         if total_revenue <= 1.0 {
+            self.stats.mint_sell_revenue_le_one += 1;
+            let shortfall = 1.0 - total_revenue;
+            if shortfall < self.stats.mint_sell_best_shortfall {
+                self.stats.mint_sell_best_shortfall = shortfall;
+            }
             return None;
         }
 
@@ -425,32 +653,53 @@ impl ArbitrageDetector {
         let max_size = yes_liquidity.min(no_liquidity);
 
         if max_size < self.config.min_liquidity {
+            self.stats.mint_sell_low_liquidity += 1;
+            return None;
+        }
+
+        let min_size_yes = self.config.min_order_notional / yes_bid;
+        let min_size_no = self.config.min_order_notional / no_bid;
+        let min_required_size = min_size_yes.max(min_size_no);
+        if max_size < min_required_size {
+            self.stats.mint_sell_below_min_notional += 1;
             return None;
         }
 
         // Cost is always 1.0 (Minting)
         // Fees: Taker fee on both Sells.
-        let yes_fee = self.config.calculate_fee_rate(yes_bid) * yes_bid;
-        let no_fee = self.config.calculate_fee_rate(no_bid) * no_bid;
+        let yes_revenue = yes_bid * max_size;
+        let no_revenue = no_bid * max_size;
+        let yes_fee = (yes_revenue * self.config.calculate_fee_rate(yes_bid)).max(self.config.min_fee);
+        let no_fee = (no_revenue * self.config.calculate_fee_rate(no_bid)).max(self.config.min_fee);
 
-        // Net Revenue = (Yes_Bid - Fee) + (No_Bid - Fee)
-        let net_revenue = (yes_bid - yes_fee) + (no_bid - no_fee);
-        let net_profit = net_revenue - 1.0;
+        let total_spend = max_size + yes_fee + no_fee;
+        let total_payout = yes_revenue + no_revenue;
+        let net_profit_abs = total_payout - total_spend;
+        let net_profit_rate = if total_spend > 0.0 {
+            net_profit_abs / total_spend
+        } else {
+            0.0
+        };
+        let gross_profit_rate = (total_revenue - 1.0) / 1.0;
 
-        if net_profit < self.config.min_profit_rate {
+        if net_profit_rate < self.config.min_profit_rate {
+            self.stats.mint_sell_below_min_profit += 1;
             return None;
         }
 
         self.opportunity_counter += 1;
         let id = format!("arb-mintsell-{}-{}", market.id, self.opportunity_counter);
+        self.stats.mint_sell_found += 1;
 
         Some(ArbitrageOpportunity {
             id,
             arb_type: ArbitrageType::MintSell,
             market_id: market.id.clone(),
             total_cost: 1.0,
-            gross_profit_rate: total_revenue - 1.0,
-            net_profit_rate: net_profit,
+            total_spend,
+            gross_profit_rate,
+            net_profit_abs,
+            net_profit_rate,
             max_size,
             legs: vec![
                 ArbitrageLeg {
@@ -496,7 +745,11 @@ impl ArbitrageOpportunity {
     /// Calculate expected profit in absolute terms for a given size.
     pub fn expected_profit(&self, size: f64) -> f64 {
         let actual_size = size.min(self.max_size);
-        actual_size * self.net_profit_rate
+        if self.max_size <= 0.0 {
+            return 0.0;
+        }
+        let profit_per_unit = self.net_profit_abs / self.max_size;
+        profit_per_unit * actual_size
     }
 
     /// Check if opportunity is still profitable with current prices.
@@ -549,6 +802,9 @@ mod tests {
             volume_24h: 10000.0,
             liquidity: 5000.0,
             is_active: true,
+            market_type: None,
+            root_market_id: None,
+            parent_title: None,
         }
     }
 
@@ -595,7 +851,7 @@ mod tests {
         // Mint @ 1.0, Sell @ 1.03 -> 3% gross
         let mut yes_ob = mock_orderbook("TEST-YES", 0.54, 1000.0); // Ask 0.54, Bid 0.52
         let mut no_ob = mock_orderbook("TEST-NO", 0.53, 1000.0); // Ask 0.53, Bid 0.51
-
+        
         // Fix bids for mock
         yes_ob.bids[0].price = 0.52;
         no_ob.bids[0].price = 0.51;
@@ -658,7 +914,9 @@ mod tests {
             arb_type: ArbitrageType::YesNo,
             market_id: "BTC-100K".into(),
             total_cost: 0.97,
+            total_spend: 0.97,
             gross_profit_rate: 0.03,
+            net_profit_abs: 0.025,
             net_profit_rate: 0.026,
             max_size: 500.0,
             legs: vec![],

@@ -281,6 +281,9 @@ pub struct ExecutionConfig {
     pub health_check_interval_local: Duration,
 
     pub health_check_interval_aws: Duration,
+
+    /// Disable all order submission (scan-only mode)
+    pub scan_only: bool,
 }
 
 /// WebSocket configuration.
@@ -407,6 +410,7 @@ impl Default for ExecutionConfig {
             order_expiration_buffer: Duration::from_secs(300),
             health_check_interval_local: Duration::from_secs(15),
             health_check_interval_aws: Duration::from_secs(3),
+            scan_only: false,
         }
     }
 }
@@ -538,6 +542,7 @@ impl Config {
             .unwrap_or_default();
 
         let data_config = DataCollectionConfig::from_env();
+        let scan_only = parse_bool_env(std::env::var("OPINION_SCAN_ONLY").ok());
 
         let mut builder = Config::builder()
             .api_key(api_key)
@@ -562,7 +567,7 @@ impl Config {
         builder.config.chain.health_check_interval =
             Duration::from_secs(health_check_interval_secs);
 
-        builder.build()
+        builder.scan_only(scan_only).build()
     }
 }
 
@@ -637,6 +642,20 @@ impl ConfigBuilder {
         self.config.environment = env;
         self
     }
+
+    pub fn scan_only(mut self, enabled: bool) -> Self {
+        self.config.execution.scan_only = enabled;
+        self
+    }
+}
+
+fn parse_bool_env(value: Option<String>) -> bool {
+    value.map_or(false, |raw| {
+        matches!(
+            raw.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        )
+    })
 }
 
 #[cfg(test)]

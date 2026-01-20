@@ -1,16 +1,17 @@
-use rquest::{Client, Proxy};
-use rquest_util::Emulation;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use rquest::{Client, Proxy};
+use rquest_util::Emulation;
 
-use super::models::{
-    ApiMarket, LatestPrice, MarketDetailResult, MarketListResult, OpinionResponse,
-    OrderDataWrapper, OrderListResult, PriceHistoryResult, QuoteTokenInfo, QuoteTokenList,
-    TokenOrderbook, UserAuthInfo, UserOrder,
-};
 use crate::config::{ApiConfig, Environment};
 use crate::error::{Error, Result};
+use super::models::{
+    ApiMarket, CategoricalMarketData, CategoricalMarketDetailResult, LatestPrice, MarketDetailResult,
+    MarketListResult, MasterMarketListResult, MasterMarketParent, OpinionResponse, OrderDataWrapper,
+    OrderListResult, PriceHistoryResult, QuoteTokenInfo, QuoteTokenList, TokenOrderbook, UserAuthInfo,
+    UserOrder
+};
 
 #[derive(Clone)]
 pub struct OpinionClient {
@@ -19,6 +20,7 @@ pub struct OpinionClient {
     api_key: String,
     cached_exchange_address: Arc<Mutex<Option<String>>>,
     cached_proxy_address: Arc<Mutex<Option<String>>>,
+    master_market_urls: Vec<String>,
 }
 
 impl OpinionClient {
@@ -56,10 +58,19 @@ impl OpinionClient {
             .build()
             .map_err(|e| Error::InternalError(format!("failed to build rquest client: {}", e)))?;
 
-        tracing::info!(
-            "OpinionClient initialized: {} mode (Chrome120 TLS emulation)",
-            mode_desc
-        );
+        tracing::info!("OpinionClient initialized: {} mode (Chrome120 TLS emulation)", mode_desc);
+
+        let master_market_urls = std::env::var("OPINION_MASTER_MARKET_URL")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.trim().to_string())
+                    .filter(|item| !item.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .filter(|items| !items.is_empty())
+            .unwrap_or_default();
 
         Ok(Self {
             client,
@@ -67,10 +78,14 @@ impl OpinionClient {
             api_key: config.api_key.clone(),
             cached_exchange_address: Arc::new(Mutex::new(None)),
             cached_proxy_address: Arc::new(Mutex::new(None)),
+            master_market_urls,
         })
     }
 
     fn build_url(&self, endpoint: &str) -> String {
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return endpoint.to_string();
+        }
         format!("{}/{}", self.base_url, endpoint)
     }
 
@@ -101,10 +116,8 @@ impl OpinionClient {
             });
         }
 
-        let text = response.text().await.map_err(|e| Error::ApiError {
-            status: 500,
-            message: format!("failed to read response: {}", e),
-        })?;
+        let text = response.text().await
+            .map_err(|e| Error::ApiError { status: 500, message: format!("failed to read response: {}", e) })?;
         let trimmed = text.trim();
 
         serde_json::from_str(trimmed).map_err(|e| Error::ApiError {
@@ -117,8 +130,7 @@ impl OpinionClient {
         let url = self.build_url(endpoint);
         tracing::debug!("GET request to: {}", url);
 
-        let response = self
-            .client
+        let response = self.client
             .get(&url)
             .header("apikey", &self.api_key)
             .header("Accept", "application/json")
@@ -137,8 +149,7 @@ impl OpinionClient {
         let url = self.build_url(endpoint);
         tracing::debug!("POST request to: {}", url);
 
-        let response = self
-            .client
+        let response = self.client
             .post(&url)
             .header("apikey", &self.api_key)
             .header("Accept", "application/json")
@@ -155,8 +166,7 @@ impl OpinionClient {
         let url = self.build_url(endpoint);
         tracing::debug!("DELETE request to: {}", url);
 
-        let response = self
-            .client
+        let response = self.client
             .delete(&url)
             .header("apikey", &self.api_key)
             .header("Accept", "application/json")
@@ -171,19 +181,22 @@ impl OpinionClient {
         self.get_markets_with_params(None, None).await
     }
 
-    pub async fn get_markets_with_params(
-        &self,
-        status: Option<&str>,
-        limit: Option<u32>,
-    ) -> Result<Vec<ApiMarket>> {
-        self.get_markets_with_pagination(status, limit, None).await
+    pub async fn get_markets_with_params(&self, status: Option<&str>, limit: Option<u32>) -> Result<Vec<ApiMarket>> {
+        self.get_markets_with_filters(status, limit, None, None, None, None).await
     }
 
-    pub async fn get_markets_with_pagination(
+    pub async fn get_markets_with_pagination(&self, status: Option<&str>, limit: Option<u32>, page: Option<u32>) -> Result<Vec<ApiMarket>> {
+        self.get_markets_with_filters(status, limit, page, None, None, None).await
+    }
+
+    pub async fn get_markets_with_filters(
         &self,
         status: Option<&str>,
         limit: Option<u32>,
         page: Option<u32>,
+        market_type: Option<i32>,
+        chain_id: Option<u64>,
+        sort_by: Option<i32>,
     ) -> Result<Vec<ApiMarket>> {
         let mut endpoint = "market".to_string();
         let mut params = vec![];
@@ -196,17 +209,21 @@ impl OpinionClient {
         if let Some(p) = page {
             params.push(format!("page={}", p));
         }
+        if let Some(mt) = market_type {
+            params.push(format!("market_type={}", mt));
+        }
+        if let Some(cid) = chain_id {
+            params.push(format!("chain_id={}", cid));
+        }
+        if let Some(sort) = sort_by {
+            params.push(format!("sort_by={}", sort));
+        }
         if !params.is_empty() {
             endpoint = format!("{}?{}", endpoint, params.join("&"));
         }
         let response: OpinionResponse<MarketListResult> = self.get(&endpoint).await?;
-        response
-            .into_result()
-            .map(|r| r.list)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+        response.into_result().map(|r| r.list)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_market_detail(&self, market_id: i64) -> Result<ApiMarket> {
@@ -214,38 +231,34 @@ impl OpinionClient {
         // URL: /openapi/market/{marketId}
         let endpoint = format!("market/{}", market_id);
         let response: OpinionResponse<MarketDetailResult> = self.get(&endpoint).await?;
-        response
-            .into_result()
+        response.into_result()
             .map(|r| r.data)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+            .map_err(|e| Error::ApiError { status: 500, message: e })
+    }
+
+    pub async fn get_categorical_market(&self, market_id: i64) -> Result<CategoricalMarketData> {
+        let endpoint = format!("market/categorical/{}", market_id);
+        let response: OpinionResponse<CategoricalMarketDetailResult> = self.get(&endpoint).await?;
+        response.into_result()
+            .map(|r| r.data)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_orderbook(&self, token_id: &str) -> Result<TokenOrderbook> {
         let endpoint = format!("token/orderbook?token_id={}", token_id);
         let response: OpinionResponse<TokenOrderbook> = self.get(&endpoint).await?;
-        response.into_result().map_err(|e| Error::ApiError {
-            status: 500,
-            message: e,
-        })
+        response.into_result()
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_latest_price(&self, token_id: &str) -> Result<LatestPrice> {
         let endpoint = format!("token/latest-price?token_id={}", token_id);
         let response: OpinionResponse<LatestPrice> = self.get(&endpoint).await?;
-        response.into_result().map_err(|e| Error::ApiError {
-            status: 500,
-            message: e,
-        })
+        response.into_result()
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
-    pub async fn get_orders(
-        &self,
-        market_id: Option<i64>,
-        limit: Option<u32>,
-    ) -> Result<Vec<UserOrder>> {
+    pub async fn get_orders(&self, market_id: Option<i64>, limit: Option<u32>) -> Result<Vec<UserOrder>> {
         let mut endpoint = "order".to_string();
         let mut params = vec![];
         if let Some(id) = market_id {
@@ -259,34 +272,45 @@ impl OpinionClient {
         }
 
         let response: OpinionResponse<OrderListResult> = self.get(&endpoint).await?;
-        response
-            .into_result()
-            .map(|r| r.list)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+        response.into_result().map(|r| r.list)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
+    }
+
+    pub fn has_master_market_url(&self) -> bool {
+        !self.master_market_urls.is_empty()
+    }
+
+    pub async fn get_master_market_list(&self) -> Result<Vec<MasterMarketParent>> {
+        if self.master_market_urls.is_empty() {
+            return Err(Error::MissingConfig {
+                field: "OPINION_MASTER_MARKET_URL".into(),
+            });
+        }
+
+        let mut combined = Vec::new();
+        for url in &self.master_market_urls {
+            let response: OpinionResponse<MasterMarketListResult> = self.get(url).await?;
+            let mut list = response.into_result()
+                .map(|r| r.list)
+                .map_err(|e| Error::ApiError { status: 500, message: e })?;
+            combined.append(&mut list);
+        }
+
+        Ok(combined)
     }
 
     pub async fn cancel_order(&self, order_id: &str) -> Result<serde_json::Value> {
         let body = serde_json::json!({"orderId": order_id});
         let response: OpinionResponse<serde_json::Value> = self.post("order/cancel", &body).await?;
-        response.into_result().map_err(|e| Error::ApiError {
-            status: 500,
-            message: e,
-        })
+        response.into_result()
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_quote_tokens(&self, chain_id: u64) -> Result<Vec<QuoteTokenInfo>> {
         let endpoint = format!("quoteToken?chainId={}", chain_id);
         let response: OpinionResponse<QuoteTokenList> = self.get(&endpoint).await?;
-        response
-            .into_result()
-            .map(|r| r.list)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+        response.into_result().map(|r| r.list)
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_exchange_address(&self, chain_id: u64, quote_token: &str) -> Result<String> {
@@ -302,19 +326,14 @@ impl OpinionClient {
             .map(|t| t.ctf_exchange_address.clone())
             .ok_or_else(|| Error::ApiError {
                 status: 404,
-                message: format!(
-                    "Exchange address not found for quote token: {}",
-                    quote_token
-                ),
+                message: format!("Exchange address not found for quote token: {}", quote_token),
             })
     }
 
     pub async fn get_user_auth(&self) -> Result<UserAuthInfo> {
         let response: OpinionResponse<UserAuthInfo> = self.get("user/auth").await?;
-        response.into_result().map_err(|e| Error::ApiError {
-            status: 500,
-            message: e,
-        })
+        response.into_result()
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_proxy_address(&self, chain_id: u64) -> Result<Option<String>> {
@@ -337,7 +356,7 @@ impl OpinionClient {
     ) -> Result<Vec<crate::data::rest::models::UserPosition>> {
         let mut endpoint = "positions".to_string();
         let mut params = vec![format!("chain_id={}", chain_id)];
-
+        
         if let Some(id) = market_id {
             params.push(format!("marketId={}", id));
         }
@@ -347,32 +366,20 @@ impl OpinionClient {
         if let Some(l) = limit {
             params.push(format!("limit={}", l));
         }
-
+        
         endpoint = format!("{}?{}", endpoint, params.join("&"));
-
-        let response: OpinionResponse<crate::data::rest::models::PositionListResult> =
-            self.get(&endpoint).await?;
-        response
-            .into_result()
+        
+        let response: OpinionResponse<crate::data::rest::models::PositionListResult> = self.get(&endpoint).await?;
+        response.into_result()
             .map(|r| r.list)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
-    pub async fn get_my_balances(
-        &self,
-        chain_id: u64,
-    ) -> Result<crate::data::rest::models::UserBalance> {
+    pub async fn get_my_balances(&self, chain_id: u64) -> Result<crate::data::rest::models::UserBalance> {
         // Try snake_case 'chain_id' instead of camelCase 'chainId'
         let endpoint = format!("user/balance?chain_id={}", chain_id);
-        let response: OpinionResponse<crate::data::rest::models::UserBalance> =
-            self.get(&endpoint).await?;
-        response.into_result().map_err(|e| Error::ApiError {
-            status: 500,
-            message: e,
-        })
+        let response: OpinionResponse<crate::data::rest::models::UserBalance> = self.get(&endpoint).await?;
+        response.into_result().map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_my_trades(
@@ -384,7 +391,7 @@ impl OpinionClient {
     ) -> Result<Vec<crate::data::rest::models::UserTrade>> {
         let mut endpoint = "trade".to_string();
         let mut params = vec![format!("chain_id={}", chain_id)];
-
+        
         if let Some(id) = market_id {
             params.push(format!("marketId={}", id));
         }
@@ -394,64 +401,58 @@ impl OpinionClient {
         if let Some(l) = limit {
             params.push(format!("limit={}", l));
         }
-
+        
         endpoint = format!("{}?{}", endpoint, params.join("&"));
-
-        let response: OpinionResponse<crate::data::rest::models::TradeListResult> =
-            self.get(&endpoint).await?;
-        response
-            .into_result()
+        
+        let response: OpinionResponse<crate::data::rest::models::TradeListResult> = self.get(&endpoint).await?;
+        response.into_result()
             .map(|r| r.list.unwrap_or_default())
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     // --- Batch Operations (Client-side implementation) ---
 
     pub async fn place_orders_batch(
-        &self,
-        orders: Vec<serde_json::Value>,
+        &self, 
+        orders: Vec<serde_json::Value>
     ) -> Result<Vec<crate::data::rest::models::BatchOrderResult>> {
         use futures::future::join_all;
-
+        
         let mut tasks = Vec::new();
         for (index, order_payload) in orders.into_iter().enumerate() {
             let client = self.clone();
             tasks.push(tokio::spawn(async move {
-                let result = client
-                    .post::<OpinionResponse<serde_json::Value>, _>("order", &order_payload)
-                    .await;
-
+                let result = client.post::<OpinionResponse<serde_json::Value>, _>("order", &order_payload).await;
+                
                 match result {
-                    Ok(resp) => match resp.into_result() {
-                        Ok(data) => {
-                            let order_id = data
-                                .get("orderData")
-                                .and_then(|d| d.get("orderId"))
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            crate::data::rest::models::BatchOrderResult {
+                    Ok(resp) => {
+                        match resp.into_result() {
+                            Ok(data) => {
+                                let order_id = data.get("orderData")
+                                    .and_then(|d| d.get("orderId"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                crate::data::rest::models::BatchOrderResult {
+                                    index,
+                                    success: true,
+                                    order_id,
+                                    error: None
+                                }
+                            },
+                            Err(e) => crate::data::rest::models::BatchOrderResult {
                                 index,
-                                success: true,
-                                order_id,
-                                error: None,
+                                success: false,
+                                order_id: None,
+                                error: Some(e)
                             }
                         }
-                        Err(e) => crate::data::rest::models::BatchOrderResult {
-                            index,
-                            success: false,
-                            order_id: None,
-                            error: Some(e),
-                        },
                     },
                     Err(e) => crate::data::rest::models::BatchOrderResult {
                         index,
                         success: false,
                         order_id: None,
-                        error: Some(e.to_string()),
-                    },
+                        error: Some(e.to_string())
+                    }
                 }
             }));
         }
@@ -462,29 +463,29 @@ impl OpinionClient {
 
     pub async fn cancel_orders_batch(
         &self,
-        order_ids: Vec<String>,
+        order_ids: Vec<String>
     ) -> Result<Vec<crate::data::rest::models::BatchOrderResult>> {
         use futures::future::join_all;
-
+        
         let mut tasks = Vec::new();
         for (index, order_id) in order_ids.into_iter().enumerate() {
             let client = self.clone();
             tasks.push(tokio::spawn(async move {
                 let result = client.cancel_order(&order_id).await;
-
+                
                 match result {
                     Ok(_) => crate::data::rest::models::BatchOrderResult {
                         index,
                         success: true,
                         order_id: Some(order_id),
-                        error: None,
+                        error: None
                     },
                     Err(e) => crate::data::rest::models::BatchOrderResult {
                         index,
                         success: false,
                         order_id: Some(order_id),
-                        error: Some(e.to_string()),
-                    },
+                        error: Some(e.to_string())
+                    }
                 }
             }));
         }
@@ -496,36 +497,31 @@ impl OpinionClient {
     pub async fn cancel_all_orders(
         &self,
         market_id: Option<i64>,
-        _side: Option<i32>, // Filter by side not strictly supported by list API but can be done client side
+        _side: Option<i32> // Filter by side not strictly supported by list API but can be done client side
     ) -> Result<crate::data::rest::models::CancelAllResult> {
         // 1. Fetch open orders
         let orders = self.get_orders(market_id, Some(50)).await?;
         // Filter active orders (status 1 = pending/open)
-        let active_orders: Vec<String> = orders
-            .into_iter()
-            .filter(|o| o.status == 1)
+        let active_orders: Vec<String> = orders.into_iter()
+            .filter(|o| o.status == 1) 
             .map(|o| o.order_id)
             .collect();
-
+            
         let total = active_orders.len();
         if total == 0 {
-            return Ok(crate::data::rest::models::CancelAllResult {
-                total_orders: 0,
-                cancelled: 0,
-                failed: 0,
-            });
+            return Ok(crate::data::rest::models::CancelAllResult { total_orders: 0, cancelled: 0, failed: 0 });
         }
 
         // 2. Batch cancel
         let results = self.cancel_orders_batch(active_orders).await?;
-
+        
         let cancelled = results.iter().filter(|r| r.success).count();
         let failed = results.len() - cancelled;
 
         Ok(crate::data::rest::models::CancelAllResult {
             total_orders: total,
             cancelled,
-            failed,
+            failed
         })
     }
 
@@ -536,31 +532,20 @@ impl OpinionClient {
         token_id: &str,
         interval: &str,
         _start: Option<i64>,
-        _end: Option<i64>,
+        _end: Option<i64>
     ) -> Result<Vec<crate::data::rest::models::PriceHistoryEntry>> {
-        let endpoint = format!(
-            "token/price-history?token_id={}&interval={}",
-            token_id, interval
-        );
+        let endpoint = format!("token/price-history?token_id={}&interval={}", token_id, interval);
         let response: OpinionResponse<PriceHistoryResult> = self.get(&endpoint).await?;
-        response
-            .into_result()
+        response.into_result()
             .map(|r| r.history)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 
     pub async fn get_order_by_id(&self, order_id: &str) -> Result<UserOrder> {
         let endpoint = format!("order/{}", order_id);
         let response: OpinionResponse<OrderDataWrapper> = self.get(&endpoint).await?;
-        response
-            .into_result()
+        response.into_result()
             .map(|r| r.order_data)
-            .map_err(|e| Error::ApiError {
-                status: 500,
-                message: e,
-            })
+            .map_err(|e| Error::ApiError { status: 500, message: e })
     }
 }

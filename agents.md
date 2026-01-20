@@ -11,6 +11,8 @@ cargo test --lib         # Run 69 unit tests (no API required)
 cargo test --tests       # Run ALL live integration tests (requires .env)
 cargo test --test <name> # Run specific test file (e.g., live_account_tests)
 cargo run                # Start bot
+cargo run --bin market_sweep  # One-off market metadata sweep (logs all markets)
+cargo run --bin ws_probe      # One-off WS probe (subscribe + dump raw events)
 ```
 
 **Formatting Standard**: See [docs/FORMAT.md](./docs/FORMAT.md) for single formatting standard (rustfmt + clippy rules).
@@ -45,6 +47,15 @@ cargo run                # Start bot
 | Market Status Filter | `"activated"` or `"resolved"` (string) | Numeric values like "2" |
 | Minimum Order | 1.30 USDT | - |
 | Market Detail | `/market/{id}` path param, `data` wrapper | `/market/detail?marketId={id}` |
+| Categorical Market Detail | `/market/categorical/{id}` | `/market/{id}` |
+
+**WebSocket Notes**
+- Subscribe payload uses `{"action":"subscribe","channel":"..."}` (not `type`).
+- Server acks with `{"code":200,"message":"Message processed"}`.
+- Orderbook channel uses `{"action":"SUBSCRIBE","channel":"market.depth.diff","marketId":<int>}` (diff stream).
+- Diff payload fields: `msgType`, `marketId`, `outcome` or `outcomeSide`, `side`, `price`, `size` (single level update).
+- `marketId` is the integer `topicId` from the master market list endpoint.
+- Always route updates by outcome ("YES"/"NO"); do not derive NO from YES.
 
 ## TLS Fingerprinting & HTTP Client
 Kong API Gateway uses JA3 TLS fingerprinting. The bot uses **pure rquest** with Chrome120 TLS emulation.
@@ -92,47 +103,47 @@ See [Architecture Design](./docs/architecture.md) for detailed system diagrams.
 ## Trading Fees (CRITICAL)
 
 ### Maker vs Taker Fees
-- **Maker (限价单)**: **0% 手续费** ✅ - 提供流动性完全免费
-- **Taker (市价单)**: **动态手续费 0% - 2%** - 成交时支付
+- **Maker (Limit Order)**: **0% Fee** ✅ - Providing liquidity is completely free
+- **Taker (Market Order)**: **Dynamic Fee 0% - 2%** - Paid on execution
 
-### 费率计算公式
+### Fee Calculation Formula
 ```
-基础费率 = topic_rate × price × (1 - price)
-有效费率 = 基础费率 × (1 - vip_discount) × (1 - referral_discount)
-实际手续费 = max(交易金额 × 有效费率, $0.50)
+Base Fee Rate = topic_rate × price × (1 - price)
+Effective Fee Rate = Base Fee Rate × (1 - vip_discount) × (1 - referral_discount)
+Actual Fee = max(Trade Amount × Effective Fee Rate, $0.50)
 ```
 
-### 费率示例 (topic_rate = 0.02)
-| 价格 | 基础费率 | 说明 |
-|------|---------|------|
-| 0.1 | 0.18% | 低不确定性 |
-| 0.5 | **0.50%** | 最高费率（最大不确定性） |
-| 0.9 | 0.18% | 低不确定性 |
+### Fee Examples (topic_rate = 0.02)
+| Price | Base Fee Rate | Description |
+|-------|--------------|-------------|
+| 0.1 | 0.18% | Low uncertainty |
+| 0.5 | **0.50%** | Highest fee (maximum uncertainty) |
+| 0.9 | 0.18% | Low uncertainty |
 
-### 关键限制
-- **最小订单金额**: $5.00 USDT
-- **最小手续费**: $0.50 USDT (即使计算值更低)
-- **最小提现金额**: $5.00 USDT
+### Key Limits
+- **Minimum Order Amount**: $5.00 USDT
+- **Minimum Fee**: $0.50 USDT (even if calculated value is lower)
+- **Minimum Withdrawal**: $5.00 USDT
 
-### 折扣系统
-- VIP Program: 根据交易量级别折扣
-- Referral Program: 邀请者获得被邀请者手续费的 5% 返还
-- Promotions: 限时活动折扣
-- **折扣可叠加使用**（乘法累计）
+### Discount System
+- VIP Program: Volume-tiered discounts
+- Referral Program: Inviter receives 5% rebate of invitee's fees
+- Promotions: Limited-time event discounts
+- **Discounts stack** (multiplicative accumulation)
 
-### 实际成本案例
-**市价单 Taker 买入 $100 @ 0.5**:
-- 计算费率: 0.02 × 0.5 × 0.5 = 0.005 (0.5%)
-- 计算手续费: $100 × 0.5% = $0.50
-- 实际收费: $0.50 (达到最低限制)
+### Actual Cost Examples
+**Market Order Taker Buy $100 @ 0.5**:
+- Calculated Rate: 0.02 × 0.5 × 0.5 = 0.005 (0.5%)
+- Calculated Fee: $100 × 0.5% = $0.50
+- Actual Charge: $0.50 (reaches minimum limit)
 
-**小额订单 $10 @ 0.5**:
-- 计算手续费: $10 × 0.5% = $0.05
-- 实际收费: $0.50 (最低手续费底限)
+**Small Order $10 @ 0.5**:
+- Calculated Fee: $10 × 0.5% = $0.05
+- Actual Charge: $0.50 (minimum fee floor)
 
-**关键结论**：市价单成交至少损失 $0.50，小额订单更不划算。
+**Key Takeaway**: Market orders incur at least $0.50 loss, making small orders even less cost-effective.
 
-### 代码实现
+### Code Implementation
 ```rust
 // src/strategy/arbitrage.rs:106-114
 pub fn calculate_fee_rate(&self, price: f64) -> f64 {
@@ -140,12 +151,12 @@ pub fn calculate_fee_rate(&self, price: f64) -> f64 {
     base_fee * (1.0 - self.referral_discount)
 }
 
-// 默认配置
-topic_fee_rate: 0.02,   // 2% 最大费率
-referral_discount: 0.10, // 10% 邀请折扣
+// Default configuration
+topic_fee_rate: 0.02,   // 2% max fee rate
+referral_discount: 0.10, // 10% referral discount
 ```
 
-**官方文档**: https://docs.opinion.trade/trade-on-opinion.trade/fees
+**Official Documentation**: https://docs.opinion.trade/trade-on-opinion.trade/fees
 
 ## Opinion Clob SDK Source Code
 - **Location**: .venv/lib/python3.12/site-packages/opinion_clob_sdk
@@ -165,6 +176,8 @@ referral_discount: 0.10, // 10% 邀请折扣
 ## Development Log
 | Date | Change |
 |------|--------|
+| 2026-01-20 | Added market pagination + cached refresh, categorical market detail support, arbitrage fee/notional fixes with scan diagnostics, and risk sizing uses total spend. |
+| 2026-01-20 | Added master market list ingestion (topicId), WS `market.depth.diff` routing with outcome/outcomeSide, scan-only mode, local orderbook store, and sweep/probe tooling |
 | 2026-01-20 | Implemented RPC failover: ChainClient now supports primary/fallback RPC endpoints with automatic health check and recovery. ConfirmationTracker batch optimization: 50ms buffer window for balanceOfBatch, reducing RPC calls by ~80%. New env vars: OPINION_RPC_URL_PRIMARY, OPINION_RPC_URL_FALLBACK, OPINION_BATCH_BUFFER_MS, OPINION_HEALTH_CHECK_INTERVAL |
 | 2026-01-19 | Implemented daily DB rotation with date-based file naming (data/opinion-{YYYY-MM-DD}.sqlite) to prevent single DB from exceeding 5GB and avoid VACUUM issues |
 | 2026-01-19 | Fixed market status filter: use `"activated"` (string) instead of `"2"` (numeric); Updated price precision: support 0.1-0.9 range with 1 decimal; Throttled RiskManager health check from 1s to 30s interval |
@@ -174,7 +187,7 @@ referral_discount: 0.10, // 10% 邀请折扣
 | 2026-01-18 | Comprehensive documentation update: created QUICKSTART.md, updated architecture.md with Strategy, Telemetry, and Address Config sections |
 | 2026-01-18 | Added comprehensive API test coverage: User Data (Positions, Balances, Trades) and Batch Operations (Place/Cancel) |
 | 2026-01-18 | Fixed API parameter issues: `chain_id` snake_case fix, handled null lists in responses |
-| 2026-01-18 | Updated test documentation and fixed CLAUDE.md commands |
+| 2026-01-18 | Updated test documentation and fixed agents.md commands (formerly CLAUDE.md) |
 | 2026-01-18 | API Compatibility Fixes: tradingMethod type (i32), added sign/safeRate/orderExpTime fields, fixed EIP-712 VerifyingContract to use CTF Exchange address, Fraction-based amount calculation, Serde camelCase verified, cancel order orderId confirmed |
 | 2026-01-18 | Implemented post-trade validation in RiskManager (slippage, execution time, P&L tracking, circuit breaker) |
 | 2026-01-18 | Fixed market detail API: use path param `/market/{id}` instead of query param, response has `data` wrapper |
@@ -190,16 +203,24 @@ referral_discount: 0.10, // 10% 邀请折扣
 OPINION_API_KEY=xxx
 OPINION_REST_URL=https://proxy.opinion.trade:8443/openapi/
 OPINION_WS_URL=wss://ws.opinion.trade
+OPINION_MASTER_MARKET_URL=https://...  # Comma-separated URLs allowed (frontend DevTools)
+OPINION_SCAN_ONLY=true                 # Disable order submission (scan-only mode)
 
 # Environment Selection
 OPINION_ENV=local  # local or aws (defaults to aws)
+OPINION_CHAIN_ID=56  # Optional override for market sweep (defaults to 56)
+OPINION_WS_CHANNEL=market.data.<pair>  # WS probe single channel
+OPINION_WS_CHANNELS=market.data.<pair1>,market.data.<pair2>  # WS probe multi-channel
+OPINION_WS_PROBE_SECS=20  # WS probe duration (seconds)
+WS probe raw payload: cargo run --bin ws_probe -- '{"action":"subscribe","channel":"..."}'
 
 # Proxy Configuration (local only)
 OPINION_PROXY_URL=http://127.0.0.1:7890  # FlClash proxy port
 
 # Blockchain
 BSC_RPC_URL=https://bsc-dataseed.binance.org
-PRIVATE_KEY=0x...
+OPINION_PRIVATE_KEY=0x...
+PRIVATE_KEY=0x...  # Fallback for legacy setups
 OPINION_EOA_ADDRESS=0x...
 
 # Data Collection (Phase 0 - SQLite Recorder)

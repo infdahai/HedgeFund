@@ -39,7 +39,7 @@
 │  │   │  Client         │   │                 │   │    (Alloy)              │   │ │
 │  │   │                 │   │                 │   │                         │   │ │
 │  │   │ ┌─────────────┐ │   │  /markets       │   │  balanceOf()            │   │ │
-│  │   │ │ market.data │ │   │  /orderbook     │   │  balanceOfBatch()       │   │ │
+│  │   │ │ market.depth.diff │ │   │  /orderbook     │   │  balanceOfBatch()       │   │ │
 │  │   │ │ order.update│ │   │  /order         │   │                         │   │ │
 │  │   │ │ trade.record│ │   │                 │   │  ConditionalTokens      │   │ │
 │  │   │ └─────────────┘ │   │  ?apikey=XXX    │   │  (ERC-1155)             │   │ │
@@ -223,8 +223,13 @@ Build a high-frequency trading (HFT) framework for the Opinion Trade prediction 
 **Market Channels:**
 | Channel | Description |
 | :--- | :--- |
-| `market.data.{pair}` | Real-time orderbook updates |
+| `market.depth.diff` | Orderbook diff updates (subscribe with `marketId` = `topicId`) |
 | `market.trade.{pair}` | Public trade stream |
+
+**Orderbook Subscribe Payload:**
+`{"action":"SUBSCRIBE","channel":"market.depth.diff","marketId":<int>}`
+
+**Diff Payload Fields:** `msgType`, `marketId`, `outcome` or `outcomeSide`, `side`, `price`, `size`
 
 **User Channels:**
 | Channel | Description | Events |
@@ -392,7 +397,7 @@ const ORDER_TYPEHASH: &str = "Order(uint256 salt,address maker,address signer,ad
 * ❌ **DO NOT** use Header for API key - MUST use query parameter.
 * ❌ **DO NOT** assume 2 or 3 decimal price - MUST use 1 decimal.
 * ❌ **DO NOT** use `ethers-rs` - Use Alloy (10x faster).
- * ❌ **DO NOT** block async I/O - agents.md rules require non-blocking.
+* ❌ **DO NOT** block async I/O - agents.md rules require non-blocking (formerly CLAUDE.md).
 * ❌ **DO NOT** exceed 15 TPS - API will reject.
 * ❌ **DO NOT** trust WebSocket quantity data - Use on-chain query.
 
@@ -500,7 +505,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │ WebSocket      │    │ REST Poller    │    │ Chain Subscriber │     │  │
 │  │  │ Client         │    │ (Fallback)     │    │ (Position Query) │     │  │
 │  │  │                │    │                │    │                  │     │  │
-│  │  │ • market.data  │    │ • /markets     │    │ • balanceOf()    │     │  │
+│  │  │ • market.depth.diff  │    │ • /markets     │    │ • balanceOf()    │     │  │
 │  │  │ • trade.order  │    │ • /orderbook   │    │ • event logs     │     │  │
 │  │  │ • trade.record │    │                │    │                  │     │  │
 │  │  └───────┬────────┘    └───────┬────────┘    └────────┬─────────┘     │  │
@@ -702,7 +707,7 @@ pub struct RateLimiterConfig {
 
 **Channels & Trust:**
 
-* `market.data.{pair}`: **Trusted**
+* `market.depth.diff` (outcome-based): **Trusted**
 * `trade.order.update`: **Only trust status**
 * `trade.record.new`: **⚠️ UNRELIABLE**
 
@@ -798,6 +803,7 @@ The `ConfirmationTracker` now buffers balance queries:
 ### 5.8 Order Gateway (`src/execution/gateway.rs`)
 
 Orchestrates validation, snapshotting, signing, rate limiting, and submission. Handles 429/5xx retries.
+Supports scan-only mode via `OPINION_SCAN_ONLY=true` to disable order submission while scanning.
 
 ### 5.9 Strategy Module (`src/strategy/`)
 
@@ -829,7 +835,9 @@ pub struct ArbitrageDetector {
 pub struct ArbitrageOpportunity {
     pub id: String,
     pub arb_type: ArbitrageType,
-    pub total_cost: f64,          // Cost to execute
+    pub total_cost: f64,          // Unit cost (sum of prices)
+    pub total_spend: f64,         // Total spend (max_size + fees)
+    pub net_profit_abs: f64,      // Net profit in USDT for max_size
     pub net_profit_rate: f64,     // Profit % after fees
     pub max_size: f64,           // Maximum executable size
     pub legs: Vec<ArbitrageLeg>, // Individual orders
@@ -858,15 +866,16 @@ Fee Rate = topic_rate * price * (1 - price)
 - $0.50 minimum fee per order
 
 **Detection Logic:**
+Note: `total_spend` was previously referred to as `total_cost` in older docs.
 
 ```rust
 // Yes/No Example
 yes_cost = yes_ask * size + yes_fee
 no_cost = no_ask * size + no_fee
-total_cost = yes_cost + no_cost
+total_spend = yes_cost + no_cost
 
-if total_cost < 1.0 * size {
-    profit = (1.0 * size) - total_cost
+if total_spend < 1.0 * size {
+    profit = (1.0 * size) - total_spend
     // Check if profit > min_threshold
 }
 ```
@@ -879,7 +888,18 @@ Continuously monitors markets for opportunities.
 - Fetch active markets from API
 - Track orderbook state for each market
 - Calculate spreads and liquidity metrics
-- Filter by volume, status, and liquidity
+- Filter by volume, status_enum, and liquidity
+- Paginate market list with `chain_id` and `sort_by` (volume24h desc)
+- Cache results for scan efficiency; fallback to unfiltered market list if active count is low
+- Fetch categorical market details via `/market/categorical/{id}` for multi-outcome arbitrage
+- Subscribe to `market.depth.diff` with `topicId` and route updates by `outcome`
+
+**Operational Notes:**
+- Market list is paginated and cached (default refresh interval: 5 minutes).
+- Active status is determined by `statusEnum == "activated"` (string-based).
+- If `volume24h` is missing, total volume is used as a fallback for filtering.
+- Market diagnostics log statusEnum and market_type distributions per refresh.
+- Orderbooks use a WS-first + REST fallback model: if a local book is missing or stale, a REST snapshot seeds the cache and the scan proceeds.
 
 **Key Structures:**
 
@@ -907,7 +927,41 @@ impl MarketOrderbook {
 }
 ```
 
-#### 5.9.3 Scoreboard (`scoreboard.rs`)
+#### 5.9.2.1 Local Orderbook Store (`orderbook_store.rs`)
+
+Maintains an in-memory snapshot of orderbooks from WebSocket `market.depth.diff` updates.
+
+**Responsibilities:**
+- Apply single-level diff updates by `marketId` + `outcome` ("YES"/"NO") to the correct book.
+- Parse WS payloads (array or object entries) into normalized bids/asks when snapshots are available.
+- Keep last update timestamps to detect stale books.
+- Provide fast access for the arbitrage scanner without REST polling.
+- Accept REST snapshots when WS data is missing or stale (semi-trust mode).
+
+#### 5.9.3 Strategy Diagnostics
+
+**Purpose:** Explain why no opportunities are detected in live scans.
+
+**Mechanism:**
+- `ArbScanStats` tracks skip reasons per strategy (missing book, cost >= 1.0, low liquidity, below min notional, below min profit).
+- The scan loop logs a per-cycle summary (markets scanned, orderbook errors, opportunities found).
+- Use `RUST_LOG=debug` for detailed decision stats alongside the scan summary.
+
+**Analysis Framework (Systematic Debugging):**
+1. **Data Quality**: statusEnum correctness, missing token IDs, stale orderbooks, parse errors.
+2. **Coverage**: pagination completeness, scan duration vs interval, API rate limiter saturation.
+3. **Pricing & Fees**: 1-decimal tick size, min fee floor, min notional per leg, taker fee curve.
+4. **Opportunity Math**: binary sum < 1.0 or > 1.0, categorical sum < 1.0, net profit after fees.
+5. **Execution & Risk**: pre-trade validation, slippage buffer, confirmation latency.
+6. **Observability**: per-cycle summaries + skip reason counts to pinpoint bottlenecks.
+
+**One-off Market Sweep (metadata reconnaissance):**
+- Binary: `src/bin/market_sweep.rs`
+- Purpose: enumerate market IDs/metadata across API filters (no `chain_id`, market_type=1/2).
+- Output: logs each market entry plus status/type distributions per query.
+- If `OPINION_MASTER_MARKET_URL` is set, the sweep uses the master list (`result.list -> childList`) and logs each `topicId`.
+
+#### 5.9.4 Scoreboard (`scoreboard.rs`)
 
 Tracks strategy performance metrics.
 
@@ -918,7 +972,7 @@ Tracks strategy performance metrics.
 - Execution time statistics
 - Slippage tracking
 
-#### 5.9.4 Market Rotator (`rotator.rs`)
+#### 5.9.5 Market Rotator (`rotator.rs`)
 
 Manages market selection and rotation.
 
@@ -945,6 +999,8 @@ pub struct RotationConfig {
 let config = ArbitrageConfig {
     min_profit_rate: 0.005,    // 0.5% minimum profit
     min_liquidity: 100.0,      // 100 units minimum
+    min_order_notional: 1.30,  // Minimum order value
+    min_fee: 0.50,             // Minimum fee per order
     topic_fee_rate: 0.02,      // 2% max fee
     referral_discount: 0.10,    // 10% rebate
     max_slippage: 0.01,        // 1% max slippage
@@ -957,7 +1013,7 @@ let detector = ArbitrageDetector::new(config);
 
 See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
 
-### 5.9.5 Replay Engine (Offline)
+### 5.9.6 Replay Engine (Offline)
 
 **Purpose:** Validate strategy metrics and risk manager behavior using JSONL replay data without live API dependency.
 
@@ -1271,7 +1327,7 @@ OPINION_TRACING_ENDPOINT=http://jaeger:14268/api/traces
 
 **See Also:**
 - `src/telemetry.rs` for implementation details
- - `agents.md` for logging guidelines
+- `agents.md` (formerly `CLAUDE.md`) for logging guidelines
 
 ---
 
@@ -1513,12 +1569,12 @@ impl ConfirmationTracker {
 ```text
 ├── Cargo.toml
 ├── README.md
- ├── agents.md
+├── agents.md               # Development guidelines (formerly CLAUDE.md)
 ├── .env.example
- ├── docs/
- │   ├── architecture.md       # Architecture and design decisions
- │   ├── FORMAT.md             # Formatting standards (rustfmt + clippy)
- │   └── QUICKSTART.md         # Quick start guide for new users
+├── docs/
+│   ├── architecture.md       # Architecture and design decisions (formerly DESIGN.md)
+│   ├── FORMAT.md             # Formatting standards (rustfmt + clippy)
+│   └── QUICKSTART.md         # Quick start guide for new users
 ├── src/
 │   ├── lib.rs                # Library root
 │   ├── main.rs               # Bot entry point
