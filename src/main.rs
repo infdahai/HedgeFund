@@ -29,6 +29,13 @@ struct MarketTokenPairs {
     no_pair: String,
 }
 
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Initialize Telemetry (Async Logging)
@@ -428,11 +435,14 @@ async fn main() -> Result<()> {
                         }
                     };
 
+                    let bids = orderbook.bids;
+                    let asks = orderbook.asks;
                     outcomes.push(OutcomeOrderbook {
                         outcome_id: outcome.outcome_id,
                         token_id: outcome.token_id,
                         pair: outcome.pair,
-                        orderbook,
+                        bids,
+                        asks,
                     });
                 }
 
@@ -441,7 +451,8 @@ async fn main() -> Result<()> {
                 }
 
                 markets_scanned += 1;
-                if let Some(opp) = detector.detect_neg_risk_arbitrage(&scan.market_id, &outcomes) {
+                let detected_at = now_unix_seconds();
+                if let Some(opp) = detector.detect_neg_risk_arbitrage(&scan.market_id, &outcomes, detected_at) {
                     neg_risk_found += 1;
                     info!("📊 NEG-RISK FOUND: {}", opp.summary());
                     if let Err(e) = strategy_tx.send(opp).await {
@@ -529,7 +540,15 @@ async fn main() -> Result<()> {
                 markets_scanned += 1;
 
                 // Check for Yes/No Arbitrage
-                if let Some(opp) = detector.detect_yesno_arbitrage(&market, &yes_ob, &no_ob) {
+                let detected_at = now_unix_seconds();
+                if let Some(opp) = detector.detect_yesno_arbitrage(
+                    &market,
+                    &yes_ob.bids,
+                    &yes_ob.asks,
+                    &no_ob.bids,
+                    &no_ob.asks,
+                    detected_at,
+                ) {
                     yesno_found += 1;
                     info!("🚀 ARBITRAGE FOUND: {}", opp.summary());
                     
@@ -539,7 +558,14 @@ async fn main() -> Result<()> {
                 }
 
                 // Check for Mint-Sell Arbitrage
-                if let Some(opp) = detector.detect_mint_sell_arbitrage(&market, &yes_ob, &no_ob) {
+                if let Some(opp) = detector.detect_mint_sell_arbitrage(
+                    &market,
+                    &yes_ob.bids,
+                    &yes_ob.asks,
+                    &no_ob.bids,
+                    &no_ob.asks,
+                    detected_at,
+                ) {
                     mint_sell_found += 1;
                     info!("💰 MINT-SELL FOUND: {}", opp.summary());
                     if let Err(e) = strategy_tx.send(opp).await {

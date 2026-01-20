@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::strategy::market_scanner::{MarketOrderbook, OrderbookSide};
+use crate::strategy::core::{MarketOrderbook, OrderbookSide};
 
 #[derive(Debug, Clone)]
 pub struct LocalOrderbook {

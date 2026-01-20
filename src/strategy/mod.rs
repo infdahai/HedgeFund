@@ -1,3 +1,5 @@
+pub mod backtest;
+pub mod core;
 pub mod arbitrage;
 pub mod market_scanner;
 pub mod orderbook_store;

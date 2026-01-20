@@ -25,6 +25,13 @@ fn init_logs() {
     }
 }
 
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Helper to initialize the client and configuration
 async fn setup() -> (OpinionClient, Config) {
     init_logs();
@@ -152,7 +159,15 @@ async fn test_arbitrage_detector_yesno() {
     let mut detector = ArbitrageDetector::with_defaults();
     
     // Detect arbitrage
-    let opportunity = detector.detect_yesno_arbitrage(&market, &yes_ob, &no_ob);
+    let detected_at = now_unix_seconds();
+    let opportunity = detector.detect_yesno_arbitrage(
+        &market,
+        &yes_ob.bids,
+        &yes_ob.asks,
+        &no_ob.bids,
+        &no_ob.asks,
+        detected_at,
+    );
     
     match opportunity {
         Some(opp) => {
@@ -209,7 +224,15 @@ async fn test_arbitrage_detector_mint_sell() {
     let mut detector = ArbitrageDetector::with_defaults();
     
     // Detect arbitrage
-    let opportunity = detector.detect_mint_sell_arbitrage(&market, &yes_ob, &no_ob);
+    let detected_at = now_unix_seconds();
+    let opportunity = detector.detect_mint_sell_arbitrage(
+        &market,
+        &yes_ob.bids,
+        &yes_ob.asks,
+        &no_ob.bids,
+        &no_ob.asks,
+        detected_at,
+    );
     
     match opportunity {
         Some(opp) => {
