@@ -1871,25 +1871,165 @@ aws s3 mv "data/parquet/orderbook_snapshots_v1/" "s3://your-bucket/orderbook_sna
 
 ### Stage C: Research Backend (offline)
 
-Intent: fast iteration on strategy without touching production.
+Intent: convert recorded data into validated strategy parameters without touching production.
 
-- Storage: S3 bucket of Parquet files.
-- Compute: local workstation or separate EC2.
-- Query: DuckDB or ClickHouse (fast scan + SQL).
-- Output: parameter updates, not ad-hoc runtime changes.
+#### Decision (Tooling)
 
-Example analysis (DuckDB):
+**Primary stack: Pure Rust + Polars (Lazy API)**
 
-```python
-import duckdb
-df = duckdb.query(
-    "SELECT * FROM 'data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet' WHERE spread > 0.05"
-).df()
+Rationale:
+- Avoids implementation drift by reusing production logic (fees, thresholds, arbitrage detection).
+- Keeps a single language/toolchain (Rust) and removes Python env overhead.
+- Polars Lazy API provides predicate/projection pushdown and streaming execution for large Parquet datasets.
+
+**Hybrid execution model (mandatory):**
+- Use Polars for IO + stateless filtering/aggregation.
+- Use Rust iterators for stateful simulation (latency, position lock, risk rules).
+- Do **not** attempt to encode stateful trading logic in Polars expressions.
+
+**Optional:** DuckDB for ad-hoc SQL exploration (not required for the core workflow).
+
+#### Inputs
+
+- Parquet datasets produced by Stage A (Hive partitioning):
+  - `orderbook_snapshots_v1/date=YYYY-MM-DD/hour=HH/part-*.parquet`
+  - `scan_stats_v1/date=YYYY-MM-DD/hour=HH/part-*.parquet`
+- SQLite `confirmed_orders` (authoritative fills) for PnL attribution.
+
+#### Core Components
+
+1. **Data Preparation (Polars, stateless)**
+   - Use `polars::LazyFrame::scan_parquet()` with glob patterns.
+   - Enable streaming for datasets larger than RAM.
+   - Partition pruning via Hive directory structure (`date=`, `hour=`).
+   - Apply stateless filters (spread, liquidity, min notional) and sort by timestamp.
+
+2. **Data Cleaning & Normalization**
+   - Enforce price precision: round to 1 decimal (0.1 - 0.9).
+   - Reject rows that violate minimum notional (use runtime config default).
+   - Strictly reuse fee calculation from `strategy/arbitrage.rs` to avoid drift.
+
+3. **Stateful Simulation (Rust iterator)**
+   - Partition by `market_id` and simulate each market independently.
+   - Use Rayon to parallelize across markets.
+   - Maintain per-market state (position, cash, `unlock_ts`).
+   - **Blind exposure:** if `ts < unlock_ts`, skip new entries.
+
+4. **Descriptive Research (Market Microstructure Report)**
+   - Liquidity availability: % of time top-of-book is non-empty.
+   - Spread distribution (best_ask - best_bid) and tail risk.
+   - Slippage curves: cost to buy/sell 100/500/1000 shares.
+   - Opportunity frequency: how often `yes_ask + no_ask < 1.0 - fee` occurs.
+
+5. **Offline Replay & Fill Simulation**
+   - Replay snapshots in time order using a conservative fill simulator.
+   - **Latency modeling:** simulate order arrival at T + 200ms (configurable).
+   - **State reconstruction:** execute against the snapshot at arrival time, not signal time.
+   - **Blind exposure:** account for 3-5s confirmation lock before funds are reusable.
+   - Output `potential_trades.csv` with `trigger_time`, `market_id`, `expected_profit`, `duration_ms`.
+
+#### Outputs
+
+- Parameter updates for `config.toml` (spread thresholds, min liquidity, min profit).
+- CSV/Parquet reports for iteration (not runtime overrides).
+
+#### Guardrails
+
+- No Python re-implementation of core strategy logic.
+- No direct changes to production behavior from research runs.
+- Keep backtest logic deterministic and reproducible (fixed seed + fixed snapshot order).
+
+#### Stateful Model (SimState)
+
+Define an explicit minimal virtual-exchange state to avoid logic drift and to express lock/confirmation.
+
+```rust
+struct SimState {
+    // Capital state
+    virtual_balance: f64,
+    virtual_inventory: f64,
+
+    // Blind exposure
+    unlock_ts_us: i64,
+    pending_txs: Vec<PendingTx>,
+
+    // Metrics
+    total_trades: u64,
+    winning_trades: u64,
+    max_drawdown: f64,
+}
+
+struct PendingTx {
+    submitted_at_us: i64,
+    expected_confirm_at_us: i64, // submitted_at + 3000-5000ms
+    cost: f64,
+}
 ```
 
-Questions to answer first:
-- Opportunity cost: when total_spend < 1.0 but no trade executed, would it have been profitable?
-- Slippage distribution: snapshot_price vs execution_price, and how often it exceeds limits.
+#### Simulation Loop (Minimal Virtual Exchange)
+
+1. **Advance time:** iterate ticks in time order.
+2. **Confirm pending:** release funds when `current_ts >= expected_confirm_at_us`.
+3. **Check lock:** if `current_ts < unlock_ts_us`, skip signal evaluation.
+4. **Evaluate signal:** reuse production logic for detection + fee model.
+5. **Submit trade:** create `PendingTx`, update `unlock_ts_us`, record trade.
+
+This “stateful core” must remain in Rust, not Polars.
+
+#### Latency Modeling (MVP)
+
+Prefer **Next-Tick Execution** rather than a complex time buffer:
+- Signal at tick `T`.
+- Execute at tick `T+1` using the new snapshot (more conservative).
+- If price worsened, treat as slippage loss; if condition no longer holds, skip.
+
+This approximates 200ms reaction latency while matching snapshot granularity.
+
+#### Suggested Deliverables
+
+- `src/bin/research.rs` (or `src/bin/backtest.rs`) CLI with:
+  - `--date-range`, `--market-id`, `--min-profit`, `--output`
+  - `--latency-ms`, `--streaming`, `--report`
+- `reports/` output folder with summary CSVs and aggregate metrics.
+
+#### Optional Visualization
+
+- Integrate `rerun` to visualize time series (best_bid, best_ask, signals, pnl) during replay.
+- Log **state changes** only (trade executions, lock/unlock, pnl updates) to reduce noise.
+- Goal: fast inspection of “why no trade” at specific timestamps without Python.
+
+#### Scalability & Evolution
+
+- Parquet is the storage contract; compute is decoupled from storage.
+- Scale-up path: larger single machine (more CPU/RAM/IO) without code changes.
+- Scale-out path (future): Iceberg metadata + Spark/Trino/other distributed engines.
+- DuckDB remains optional for ad-hoc SQL; it is not required for an Iceberg migration.
+
+#### Implementation Checklist (Stage C)
+
+1. Confirm Stage A Parquet recorder writes `local_recv_ts_us` (time base for replay).
+2. Add `src/bin/research.rs` CLI (Polars load → Rust iterator sim → reports).
+3. Reuse `opinion_hft::strategy` logic; do not re-implement in research.
+4. Implement `SimState` and pending confirmation flow.
+5. (Optional) Add Rerun logging for trade points + PnL curve.
+
+#### Example (Polars Lazy API)
+
+```rust
+let df = LazyFrame::scan_parquet(
+        "data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet",
+        Default::default(),
+    )?
+    .filter(col("spread").gt(lit(0.05)))
+    .select([
+        col("market_id"),
+        col("outcome"),
+        col("best_bid"),
+        col("best_ask"),
+    ])
+    .with_streaming(true)
+    .collect()?;
+```
 
 ### Stage D: Execution Evolution (Optimistic Execution)
 
@@ -1939,7 +2079,6 @@ Deferral guidance:
 Non-goals for this phase:
 - No direct ML inference in the hot path.
 - No S3 upload from the trading process.
-
 ---
 
 ## 12. New Session Prompt
