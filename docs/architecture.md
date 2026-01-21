@@ -2182,16 +2182,78 @@ The system guarantees **Zero Implementation Drift** by sharing the core library 
 **B. Backtest Engine (`src/bin/research.rs`)**
 *Hybrid Execution Model: Stateless I/O + Stateful Simulation.*
 
+```text
+┌────────────────────────────────────────────┐
+│ Newcomer Quickstart                        │
+├────────────────────────────────────────────┤
+│ 1) Build with polars feature               │
+│ 2) Run research with input glob            │
+│ 3) (Optional) attach confirmed_orders DB   │
+│ 4) Inspect CSV + microstructure summary    │
+└────────────────────────────────────────────┘
+```
+
+**Run (required feature flag):**
+```bash
+cargo run --bin research --features polars -- \
+  --input "data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet" \
+  --output reports/potential_trades.csv \
+  --confirmed-db data/opinion-hft.sqlite
+```
+
+```text
+┌──────────────────────────────┐
+│ Parquet snapshots (Hive)     │
+│ date=*/hour=*                │
+└───────────────┬──────────────┘
+                │ scan_parquet + streaming
+                ▼
+┌──────────────────────────────┐
+│ Columnar extraction          │
+│ market_id / ts / bids / asks │
+└───────────────┬──────────────┘
+                ▼
+┌──────────────────────────────┐
+│ Per-market replay            │
+│ Rayon + SimState             │
+└───────────────┬──────────────┘
+                ▼
+┌──────────────────────────────┐
+│ Reports                       │
+│ trades.csv + microstructure  │
+└──────────────────────────────┘
+```
+
 1.  **Data Loading (Polars Lazy API)**:
     *   Scans Parquet using Hive partitioning (`date=*/hour=*`).
     *   Applies stateless filters (spread, liquidity) pushing predicates down to scan level.
-    *   Streams data into Rust iterators (keeps RAM usage low).
+    *   Enable `with_streaming(true)` for large datasets.
+    *   Convert rows via columnar access (avoid `get_row()` per row).
+
+```text
+┌──────────────┐   ┌────────────────────┐   ┌───────────────┐
+│ Parquet scan │─▶│ Lazy filters (push) │─▶│ Streaming exec │
+└──────────────┘   └────────────────────┘   └───────────────┘
+```
 2.  **Simulation Loop (Rust + Rayon)**:
     *   Parallelizes processing by `market_id`.
     *   **Latency Model**: "Next-Tick Execution" (Execute at T+1). Simulates ~200ms reaction time.
     *   **Constraint Model**: Applies 3-5s confirmation lock (funds unavailable during confirmation).
 3.  **Mock Wallet (`SimState`)**:
     *   Tracks virtual balance, inventory, and pending transactions.
+
+```text
+┌───────────────────────────┐   ┌───────────────────────────┐
+│ Required Parquet Columns  │   │ Optional Columns          │
+├───────────────────────────┤   ├───────────────────────────┤
+│ market_id (string)        │   │ outcome (string)          │
+│ local_recv_ts_us (i64)    │   │ pair (string)             │
+│ best_bid (f64)            │   │ bids (list<struct{p,s}>)  │
+│ best_ask (f64)            │   │ asks (list<struct{p,s}>)  │
+│ bid_size (f64)            │   │ snapshot_ts (i64)         │
+│ ask_size (f64)            │   │                           │
+└───────────────────────────┘   └───────────────────────────┘
+```
 
 #### 3. State Model (SimState)
 
@@ -2222,13 +2284,48 @@ struct SimState {
 **Outputs**:
 *   `potential_trades.csv`: All signaled trades with expected PnL.
 *   `config_recommendations.toml`: Optimized thresholds (min_profit, min_liquidity).
+*   `microstructure` summary: liquidity availability, spread distribution, slippage, opportunity rate.
+
+```text
+┌───────────────────────────┐
+│ microstructure metrics    │
+├───────────────────────────┤
+│ liquidity_availability_pct│ = % of ticks with non-empty TOB
+│ spread_p50 / spread_p95   │ = median / p95 of TOB spread
+│ slippage_100_shares       │ = median modeled impact @100
+│ opportunity_frequency/hr  │ = (arb ticks) / hours
+└───────────────────────────┘
+```
+
+```text
+┌───────────────────────────┐
+│ confirmed_orders schema   │
+├───────────────────────────┤
+│ market_id (text)          │
+│ side (text)               │
+│ expected_price (real)     │
+│ actual_fill (text)        │
+│ confirmation_time_ms (int)│
+│ timestamp_ms (int)        │
+└───────────────────────────┘
+```
+
+```text
+┌──────────────┐   ┌───────────────────────┐   ┌────────────────────┐
+│ Snapshots    │─▶│ Backtest + SimState   │─▶│ Reports + Metrics   │
+└──────────────┘   └───────────────────────┘   └────────────────────┘
+```
 
 #### 5. Implementation Checklist
 
 1.  [x] **Core Refactor**: Extract `strategy/core` shared library.
-2.  [ ] **CLI Tool**: `src/bin/research.rs` with Polars integration.
-3.  [ ] **SimState**: Implement `SimState` struct and lock logic.
-4.  [ ] **Reporting**: CSV export of trade logs and summary metrics.
+2.  [x] **CLI Tool**: `src/bin/research.rs` with Polars integration.
+3.  [x] **SimState**: Implement `SimState` struct and lock logic.
+4.  [x] **Reporting**: CSV export of trade logs and summary metrics.
+5.  [x] **Columnar iteration**: avoid `get_row()` in hot loops.
+6.  [x] **Streaming mode**: enable Polars streaming engine.
+7.  [x] **Microstructure report**: add liquidity/spread/slippage/opportunity summary.
+8.  [x] **Confirmed-order attribution**: load `confirmed_orders` from SQLite for reconciliation.
 
 ### P2: Strategy Iteration (Driven by Stage C Results)
 

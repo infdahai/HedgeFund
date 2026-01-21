@@ -5,8 +5,9 @@ High-frequency trading bot for Opinion.trade prediction markets on BNB Chain (56
 
 ## Quick Commands
 ```bash
-cargo check              # Type check
-cargo clippy             # Lint (0 warnings required)
+cargo fmt --all          # Format code (required)
+cargo fmt --all --check  # Verify formatting (CI-style)
+cargo clippy --all -D warnings # Strict linting (0 warnings required)
 cargo test --lib         # Run 69 unit tests (no API required)
 cargo test --tests       # Run ALL live integration tests (requires .env)
 cargo test --test <name> # Run specific test file (e.g., live_account_tests)
@@ -166,36 +167,70 @@ Deviations from rustfmt default format are allowed in these cases:
 - **Technical debt**: Non-blocking warnings can be recorded as technical debt, allow follow-up handling
 - **False positives**: If confirmed as false positives, add `#[allow(...)]`
 
-### 4. Execution Workflow
+### 4. Mandatory Execution Workflow
 
-#### Development Phase
+To maintain the high standards of the Opinion HFT project, all contributors must follow this workflow before committing code or submitting tasks.
 
-1. **Code Changes**
-    ```bash
-    # After editing code
-    cargo fmt --all
-    ```
+#### 4.1. Formatting (Required - Mandatory)
+Code must be formatted using the project's `rustfmt` configuration. This ensures a consistent style across the entire codebase. Run this after any code changes.
+```bash
+cargo fmt --all
+```
 
-2. **Checks**
-    ```bash
-    # Check formatting (optional)
-    cargo fmt --all --check
+**Verification step (required before commit/PR):**
+```bash
+cargo fmt --all --check
+```
 
-    # Check lint warnings (must have 0 warnings)
-    cargo clippy --all -D warnings
-    ```
+#### 4.2. Linting (Required - Zero Warning Policy)
+Clippy must be run with all warnings treated as errors. **Submissions with any clippy warnings will be rejected.**
+```bash
+cargo clippy --all -D warnings
+```
 
-3. **Pre-commit Checklist**
-    - [ ] `cargo fmt` passes (no formatting changes)
-    - [ ] `cargo clippy` has no warnings (0 warnings)
-    - [ ] All public APIs have documentation comments
-    - [ ] No unsafe code (unless documented)
+#### 4.3. Submission Gate (Strict)
+**No commit or PR is allowed unless ALL items below pass in order.**
+1. **Format** (enforced):
+   ```bash
+   cargo fmt --all
+   cargo fmt --all --check
+   ```
+2. **Lint** (zero warnings):
+   ```bash
+   cargo clippy --all -D warnings
+   ```
+3. **Core tests** (must pass):
+   ```bash
+   cargo test --lib
+   ```
 
-#### CI/CD Integration
+If any step fails, fix and re-run from step 1.
+
+#### 4.4. Pre-Submission Checklist
+Perform these checks immediately before final submission:
+- [ ] **Formatting**: `cargo fmt --all` then `cargo fmt --all --check`
+- [ ] **Linting**: `cargo clippy --all -D warnings` (0 warnings)
+- [ ] **Tests**: `cargo test --lib`
+- [ ] **Documentation**: All new public types/functions have `///` comments
+- [ ] **Proof**: Include fmt/clippy/test results in PR description (or paste logs in task update)
+
+#### 4.5. CI/CD Integration (Enforced)
 
 **GitHub Actions / Automation Tools**:
-- Add pre-commit hook to automatically run `cargo fmt`
-- Run `cargo clippy --all -D warnings` in CI and block non-zero exit codes
+- Automation tools run `cargo fmt --all --check` to verify formatting.
+- CI runs `cargo clippy --all -D warnings` and blocks PRs with any warnings.
+
+#### 4.6. Local Guardrails (Required)
+Set up local hooks or scripts so formatting/linting cannot be skipped.
+
+**Minimum requirement**: a local pre-commit/pre-push hook that runs:
+```bash
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all -D warnings
+```
+
+**Strict rule**: If hooks are unavailable, manually run the exact commands above before every commit.
 
 ## Test Structure
 | Test File | Tests | Description |

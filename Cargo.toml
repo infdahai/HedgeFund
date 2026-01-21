@@ -45,7 +45,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 rusqlite = { version = "0.31", features = ["bundled"] }
-polars = { version = "0.45", default-features = false, features = ["parquet", "polars-io", "dtype-struct", "fmt", "lazy", "dtype-date", "dtype-datetime", "dtype-time"], optional = true }
+glob = "0.3"
+polars = { version = "0.45", default-features = false, features = ["parquet", "polars-io", "dtype-struct", "fmt", "lazy", "dtype-date", "dtype-datetime", "dtype-time", "streaming"], optional = true }
 polars-parquet = { version = "0.45", default-features = false, optional = true }
 
 # Observability
