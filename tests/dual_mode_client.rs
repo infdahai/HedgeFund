@@ -2,6 +2,9 @@ use opinion_hft::config::{Config, Environment};
 use opinion_hft::data::rest::OpinionClient;
 use std::str::FromStr;
 
+mod common;
+use common::init_proxy_env;
+
 #[test]
 fn test_environment_parsing() {
     assert_eq!(Environment::from_str("local"), Ok(Environment::Local));
@@ -22,6 +25,7 @@ fn test_environment_defaults() {
 
 async fn test_local_mode_uses_proxy() {
     dotenvy::dotenv().ok();
+    init_proxy_env();
 
     let config = Config::builder()
         .environment(Environment::Local)
@@ -38,6 +42,7 @@ async fn test_local_mode_uses_proxy() {
 
 async fn test_aws_mode_uses_direct_connection() {
     dotenvy::dotenv().ok();
+    init_proxy_env();
 
     let config = Config::builder()
         .environment(Environment::Aws)
@@ -53,6 +58,7 @@ async fn test_aws_mode_uses_direct_connection() {
 #[tokio::test]
 
 async fn test_env_var_loading() {
+    init_proxy_env();
     std::env::set_var("OPINION_ENV", "local");
     std::env::set_var("OPINION_API_KEY", "test-key");
     std::env::set_var(

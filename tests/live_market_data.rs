@@ -3,10 +3,14 @@ use opinion_hft::data::rest::OpinionClient;
 
 use tracing::{info, warn};
 
+mod common;
+use common::init_proxy_env;
+
 /// Helper to initialize the client and configuration
 async fn setup() -> (OpinionClient, Config) {
     // Initialize tracing for tests if not already initialized
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    init_proxy_env();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
@@ -19,8 +23,6 @@ async fn setup() -> (OpinionClient, Config) {
 
     (client, config)
 }
-
-#[ignore]
 
 #[tokio::test]
 
@@ -73,8 +75,6 @@ async fn test_market_list_and_pagination() {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 
 async fn test_market_filtering() {
@@ -97,8 +97,6 @@ async fn test_market_filtering() {
         );
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 
@@ -132,8 +130,6 @@ async fn test_quote_tokens() {
         assert!(token.decimal > 0);
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 
@@ -190,8 +186,6 @@ async fn test_orderbook() {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 
 async fn test_market_detail() {
@@ -235,8 +229,6 @@ async fn test_market_detail() {
         info!("Condition ID: {}", condition_id);
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 

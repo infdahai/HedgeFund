@@ -6,7 +6,7 @@
 // 3. Cancel the order
 // 4. Verify cancellation
 //
-// Tests are ignored by default (#[ignore]) because they require live API access and valid credentials in .env file
+// Tests require live API access and valid credentials in .env file.
 
 use alloy_primitives::{Address, U256};
 use opinion_hft::{
@@ -18,6 +18,9 @@ use opinion_hft::{
 use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
+
+mod common;
+use common::init_proxy_env;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,11 +85,10 @@ impl PlaceOrderRequest {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
-
+#[ignore]
 async fn test_complete_order_workflow() -> anyhow::Result<()> {
+    init_proxy_env();
     println!("🚀 Starting Complete Order Workflow Test...");
     println!("   Steps: Place -> Query -> Cancel -> Verify");
 
@@ -264,11 +266,9 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[ignore]
-
 #[tokio::test]
-
 async fn test_api_auth_and_config() -> anyhow::Result<()> {
+    init_proxy_env();
     println!("Testing API authentication and configuration...");
 
     let config = Config::from_env()?;

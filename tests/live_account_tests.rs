@@ -3,13 +3,15 @@ use opinion_hft::chain::ChainClient;
 use opinion_hft::config::Config;
 use opinion_hft::data::rest::OpinionClient;
 
+mod common;
+use common::init_proxy_env;
+
 /// Loads configuration from .env for live tests.
 fn load_test_config() -> Config {
+    init_proxy_env();
     dotenvy::dotenv().ok();
     Config::from_env().expect("Failed to load config from .env. Ensure OPINION_API_KEY is set.")
 }
-
-#[ignore]
 
 #[tokio::test]
 
@@ -55,8 +57,6 @@ async fn test_get_user_auth_completeness() {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 
 async fn test_proxy_address_resolution_bsc() {
@@ -87,8 +87,6 @@ async fn test_proxy_address_resolution_bsc() {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 
 async fn test_exchange_address_mapping() {
@@ -116,8 +114,6 @@ async fn test_exchange_address_mapping() {
         "Exchange address should be 42 characters"
     );
 }
-
-#[ignore]
 
 #[tokio::test]
 
@@ -164,8 +160,6 @@ async fn test_live_account_balance_check() {
     println!("✅ Balance for {}: {}", target_address, balance);
 }
 
-#[ignore]
-
 #[tokio::test]
 
 async fn test_auth_rejection_with_invalid_key() {
@@ -181,8 +175,6 @@ async fn test_auth_rejection_with_invalid_key() {
     assert!(result.is_err(), "Authentication should have been rejected");
     println!("✅ Correctly rejected: {:?}", result.err());
 }
-
-#[ignore]
 
 #[tokio::test]
 

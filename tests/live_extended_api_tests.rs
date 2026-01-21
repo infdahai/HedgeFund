@@ -2,8 +2,12 @@ use opinion_hft::config::Config;
 use opinion_hft::data::rest::OpinionClient;
 use tracing::{info, warn};
 
+mod common;
+use common::init_proxy_env;
+
 async fn setup() -> (OpinionClient, Config) {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    init_proxy_env();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
@@ -16,8 +20,6 @@ async fn setup() -> (OpinionClient, Config) {
 
     (client, config)
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_get_latest_price() {
@@ -38,8 +40,6 @@ async fn test_get_latest_price() {
     assert!(!price.price.is_empty());
     assert!(price.timestamp > 0);
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_get_price_history() {
@@ -66,8 +66,6 @@ async fn test_get_price_history() {
         assert!(entry.timestamp > 0);
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_get_order_by_id() {

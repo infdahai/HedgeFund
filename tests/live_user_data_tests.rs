@@ -2,8 +2,12 @@ use opinion_hft::config::Config;
 use opinion_hft::data::rest::OpinionClient;
 use tracing::{info, warn};
 
+mod common;
+use common::init_proxy_env;
+
 async fn setup() -> (OpinionClient, Config) {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    init_proxy_env();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
@@ -16,8 +20,6 @@ async fn setup() -> (OpinionClient, Config) {
 
     (client, config)
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_get_my_positions() {
@@ -50,8 +52,6 @@ async fn test_get_my_positions() {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_get_my_balances() {
     let (client, _) = setup().await;
@@ -76,8 +76,6 @@ async fn test_get_my_balances() {
         }
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_get_my_trades() {

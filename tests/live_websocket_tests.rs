@@ -4,11 +4,13 @@ use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 use tracing::info;
 
+mod common;
+use common::init_proxy_env;
+
 fn load_config() -> Config {
+    init_proxy_env();
     Config::from_env().expect("Failed to load config from .env")
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_websocket_connection() {
@@ -33,8 +35,6 @@ async fn test_websocket_connection() {
     ws_client.close().await.ok();
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_websocket_market_data() {
     let config = load_config();
@@ -55,8 +55,6 @@ async fn test_websocket_market_data() {
         println!("Received market data: {}", data);
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_websocket_trade_channels() {
@@ -86,8 +84,6 @@ async fn test_websocket_trade_channels() {
     ws_client.close().await.ok();
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_websocket_message_parsing() {
     let config = load_config();
@@ -111,8 +107,6 @@ async fn test_websocket_message_parsing() {
 
     ws_client.close().await.ok();
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_websocket_order_lifecycle() {
@@ -152,8 +146,6 @@ async fn test_websocket_order_lifecycle() {
     );
     ws_client.close().await.ok();
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_websocket_reconnection() {

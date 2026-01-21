@@ -10,6 +10,13 @@ use opinion_hft::chain::client::ChainClient;
 use opinion_hft::config::{ChainConfig, CHAIN_ID, CONDITIONAL_TOKENS_ADDRESS};
 use std::time::Duration;
 
+mod common;
+use common::init_proxy_env;
+
+fn init_rpc_env() {
+    init_proxy_env();
+}
+
 fn create_config_with_fallback() -> ChainConfig {
     ChainConfig {
         rpc_url: "https://invalid-primary.example.com".into(), // Invalid primary
@@ -40,10 +47,9 @@ fn create_config_primary_only() -> ChainConfig {
     }
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_primary_rpc_healthy() {
+    init_rpc_env();
     // Test that primary RPC works when healthy
     let config = create_config_primary_only();
     // Use a non-zero address to avoid ERC1155 "balance query for zero address" revert
@@ -64,10 +70,9 @@ async fn test_primary_rpc_healthy() {
     );
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_fallback_on_primary_failure() {
+    init_rpc_env();
     // Test that fallback is used when primary fails
     let config = create_config_with_fallback();
     let account: Address = "0x0000000000000000000000000000000000000001"
@@ -87,10 +92,9 @@ async fn test_fallback_on_primary_failure() {
     );
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_batch_query() {
+    init_rpc_env();
     // Test batch query functionality
     let config = create_config_primary_only();
     let account: Address = "0x0000000000000000000000000000000000000001"

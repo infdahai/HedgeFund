@@ -11,6 +11,9 @@ use opinion_hft::strategy::arbitrage::{ArbitrageConfig, ArbitrageDetector, Arbit
 use opinion_hft::strategy::market_scanner::{MarketInfo, MarketOrderbook, OrderbookSide};
 use tracing::info;
 
+mod common;
+use common::init_proxy_env;
+
 /// Helper to initialize logging
 fn init_logs() {
     use std::sync::Once;
@@ -35,6 +38,7 @@ fn now_unix_seconds() -> u64 {
 /// Helper to initialize the client and configuration
 async fn setup() -> (OpinionClient, Config) {
     init_logs();
+    init_proxy_env();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
@@ -136,8 +140,6 @@ async fn fetch_market_with_orderbook(
     None
 }
 
-#[ignore]
-
 #[tokio::test]
 async fn test_arbitrage_detector_yesno() {
     let (client, _) = setup().await;
@@ -207,8 +209,6 @@ async fn test_arbitrage_detector_yesno() {
         }
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_arbitrage_detector_mint_sell() {
@@ -284,8 +284,6 @@ async fn test_arbitrage_detector_mint_sell() {
         }
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_arbitrage_configuration() {

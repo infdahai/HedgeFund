@@ -7,8 +7,12 @@ use opinion_hft::types::order::{Order, OrderIntent, OrderSide, SignatureType};
 use std::time::Duration;
 use tracing::{info, warn};
 
+mod common;
+use common::init_proxy_env;
+
 async fn setup() -> (OpinionClient, Config) {
     let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+    init_proxy_env();
 
     let config = Config::from_env().expect("Failed to load configuration from environment");
 
@@ -22,9 +26,8 @@ async fn setup() -> (OpinionClient, Config) {
     (client, config)
 }
 
-#[ignore]
-
 #[tokio::test]
+#[ignore]
 async fn test_place_orders_batch() {
     let (client, config) = setup().await;
 
@@ -146,8 +149,6 @@ async fn test_place_orders_batch() {
         }
     }
 }
-
-#[ignore]
 
 #[tokio::test]
 async fn test_cancel_all_orders() {

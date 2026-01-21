@@ -11,13 +11,15 @@ use opinion_hft::{
     types::order::{Order, OrderIntent, OrderSide, SignatureType},
 };
 
+mod common;
+use common::init_proxy_env;
+
 fn load_test_config() -> Config {
+    init_proxy_env();
     Config::from_env().expect("Failed to load config from .env")
 }
 
 /// Test: Fetch quote tokens and exchange address
-#[ignore]
-
 #[tokio::test]
 
 async fn test_fetch_quote_tokens() {
@@ -43,8 +45,6 @@ async fn test_fetch_quote_tokens() {
 }
 
 /// Test: Get user authentication info and proxy address
-#[ignore]
-
 #[tokio::test]
 
 async fn test_fetch_user_auth() {
@@ -74,8 +74,6 @@ async fn test_fetch_user_auth() {
 }
 
 /// Test: Fetch active markets
-#[ignore]
-
 #[tokio::test]
 
 async fn test_fetch_active_markets() {
@@ -104,8 +102,6 @@ async fn test_fetch_active_markets() {
 }
 
 /// Test: Fetch orderbook for a token
-#[ignore]
-
 #[tokio::test]
 
 async fn test_fetch_orderbook() {
@@ -150,8 +146,6 @@ async fn test_fetch_orderbook() {
 }
 
 /// Test: EIP-712 signature generation
-#[ignore]
-
 #[tokio::test]
 
 async fn test_eip712_signing() {
@@ -201,10 +195,8 @@ async fn test_eip712_signing() {
 }
 
 /// Test: Full order placement flow (uses deep price to avoid fills)
-#[ignore]
-
 #[tokio::test]
-
+#[ignore]
 async fn test_place_limit_order() {
     let config = load_test_config();
     let rest_client = OpinionClient::new(&config.api, config.environment)
@@ -340,8 +332,6 @@ async fn test_place_limit_order() {
 }
 
 /// Test: Cancel order (requires an existing order)
-#[ignore]
-
 #[tokio::test]
 
 async fn test_cancel_order() {
@@ -351,8 +341,6 @@ async fn test_cancel_order() {
 }
 
 /// Test: Get user positions
-#[ignore]
-
 #[tokio::test]
 
 async fn test_get_positions() {
