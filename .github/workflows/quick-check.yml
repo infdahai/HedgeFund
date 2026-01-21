@@ -24,6 +24,7 @@ jobs:
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_STABLE || 'stable' }}
           components: rustfmt, clippy
 
       # CRITICAL: This cache provides 10x speedup for Rust builds
