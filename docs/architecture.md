@@ -2925,14 +2925,14 @@ if adjusted_size < config.min_order_notional {
 
 **Recommendation**: Use **conservative skip** for MVP. Aggressive scaling requires more validation.
 
-**C. Capital Turnover Metric**
+**C. Capital Turnover + ROCE Metrics**
 
-Track capital efficiency, not just absolute PnL.
+Track both **capital activity** and **capital efficiency**, not just absolute PnL.
 
-**Formula**:
+**Formulas**:
 ```
 capital_turnover = total_traded_notional / avg_locked_capital
-capital_efficiency = PnL / avg_locked_capital
+return_on_capital_employed = PnL / avg_locked_capital
 ```
 
 **Why this matters**: A strategy that locks $1000 for weeks to earn $10 is worse than one that turns $100 ten times to earn $10.
@@ -2941,20 +2941,29 @@ capital_efficiency = PnL / avg_locked_capital
 ```rust
 struct SimState {
     // Existing fields...
-    total_traded_notional: f64,   // Sum of all trade notionals
+    total_traded_notional: f64,    // Sum of trade spend (capital deployed)
     locked_time_weighted_sum: f64, // For avg_locked_capital calculation
     last_update_ts_us: i64,
 }
 
 // In apply_confirmations():
-let elapsed_us = current_ts - state.last_update_ts_us;
-state.locked_time_weighted_sum += state.locked_balance * elapsed_us as f64;
+if state.last_update_ts_us > 0 && current_ts > state.last_update_ts_us {
+    let elapsed_us = current_ts - state.last_update_ts_us;
+    state.locked_time_weighted_sum += state.locked_balance * elapsed_us as f64;
+}
 state.last_update_ts_us = current_ts;
 
-// In print_summary():
+// In simulate_market():
 let avg_locked = state.locked_time_weighted_sum / total_duration_us as f64;
-let capital_efficiency = pnl / avg_locked;
-println!("  capital_efficiency: {:.4}", capital_efficiency);
+let capital_turnover = state.total_traded_notional / avg_locked;
+let return_on_capital_employed = pnl / avg_locked;
+
+// In print_summary():
+println!("  capital_turnover: {:.4}", capital_turnover);
+println!(
+    "  return_on_capital_employed: {:.4}",
+    return_on_capital_employed
+);
 ```
 
 **D. Resolution Lock Modeling (Prediction Market Specific)** [Expert Recommendation]

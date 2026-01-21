@@ -80,6 +80,9 @@ pub(crate) struct SimState {
     pub(crate) confirmed_latency_us_total: i64,
     pub(crate) confirmed_count: u64,
     pub(crate) confirmed_by_market: HashMap<String, u64>,
+    pub(crate) total_traded_notional: f64,
+    pub(crate) locked_time_weighted_sum: f64,
+    pub(crate) last_update_ts_us: i64,
 }
 
 impl SimState {
@@ -98,6 +101,9 @@ impl SimState {
             confirmed_latency_us_total: 0,
             confirmed_count: 0,
             confirmed_by_market: HashMap::new(),
+            total_traded_notional: 0.0,
+            locked_time_weighted_sum: 0.0,
+            last_update_ts_us: 0,
         }
     }
 
@@ -124,4 +130,6 @@ pub(crate) struct MarketReport {
     pub(crate) total_trades: u64,
     pub(crate) win_rate: f64,
     pub(crate) avg_confirm_latency_us: f64,
+    pub(crate) capital_turnover: f64,
+    pub(crate) return_on_capital_employed: f64,
 }
