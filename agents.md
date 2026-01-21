@@ -625,3 +625,117 @@ if let Some(recorder) = &recorder_handle {
 5. **Measure Don't Just Assume**: Always log actual fill amounts, prices, and fees
     - Calculate and report real P&L for each trade
     - Use this data to improve strategy, not just pass/fail tests
+
+---
+
+## Agent Code Submission Workflow
+
+> **CRITICAL**: Always create GitHub PRs. Never merge locally. This protects the main branch and leverages CI as a safety gate.
+
+### Why PR, Not Local Merge?
+
+| Risk of Local Merge | PR Protection |
+|---------------------|---------------|
+| Broken code in main | CI runs BEFORE merge |
+| "Hallucination" code (missing deps) | CI catches build errors |
+| No review opportunity | Clear diff view for human review |
+| Destroys worktree isolation | Main branch stays clean |
+
+### Standard Workflow for Agents
+
+#### 1. Setup GitHub CLI
+
+```bash
+# Install gh (if not present)
+brew install gh  # macOS
+sudo apt install gh  # Ubuntu/Debian
+
+# Login (once per machine)
+gh auth login
+```
+
+#### 2. Submit Code via Worktree
+
+```bash
+# Create isolated worktree for your task (recommended)
+git worktree add -b feature/agent-task-name /path/to/worktree origin/main
+
+# In your worktree directory:
+# ... write code ...
+
+# Run pre-submission checks
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+
+# Commit your changes
+git add .
+git commit -m "feat: implement feature X"
+
+# Push to remote branch
+git push -u origin feature/agent-task-name
+```
+
+#### 3. Create Pull Request
+
+```bash
+# Create PR (fills title/body from commit message)
+gh pr create --base main --fill
+
+# Optional: Enable auto-merge if CI passes
+gh pr merge --auto --rebase
+```
+
+#### 4. Handle CI Failures
+
+```bash
+# Check CI status
+gh pr checks
+
+# If failed, read logs and fix
+gh run view <run-id> --log | grep -A 5 "error:"
+
+# Fix code, then update PR
+git add .
+git commit -m "fix: resolve CI error"
+git push
+
+# CI automatically re-runs
+```
+
+### CI Safety Gates
+
+The repository has these CI checks (see `.github/workflows/quick-check.yml`):
+
+1. **Format Check**: `cargo fmt --all --check`
+2. **Build Check**: `cargo check --lib --all-features`
+3. **Clippy**: `cargo clippy --lib -- -D warnings`
+4. **Unit Tests**: `cargo test --lib`
+
+**Your code MUST pass all 4 before requesting merge.**
+
+### Forbidden Commands
+
+```bash
+# ❌ NEVER do this
+git merge main
+git checkout main && git merge feature-branch
+git push origin main
+
+# ✅ Always do this
+git push -u origin feature-branch
+gh pr create --base main --fill
+```
+
+### Quick Reference
+
+```bash
+# Full submission sequence
+cd /path/to/worktree
+cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --lib
+git add -A && git commit -m "type: description"
+git push -u origin feature/branch-name
+gh pr create --base main --fill
+gh pr checks  # Verify CI passes
+```
