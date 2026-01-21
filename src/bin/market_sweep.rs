@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use opinion_hft::config::{ApiConfig, Environment, CHAIN_ID, REST_API_BASE_URL};
-use opinion_hft::data::rest::OpinionClient;
 use opinion_hft::data::rest::models::{MasterMarketChild, MasterMarketParent};
+use opinion_hft::data::rest::OpinionClient;
 use opinion_hft::error::{Error, Result};
 use opinion_hft::execution::rate_limiter::RateLimiter;
 use opinion_hft::telemetry::init_telemetry;
@@ -56,7 +56,10 @@ async fn main() -> Result<()> {
         );
     }
 
-    info!("Market sweep complete: unique_markets={}", global_seen.len());
+    info!(
+        "Market sweep complete: unique_markets={}",
+        global_seen.len()
+    );
     Ok(())
 }
 
@@ -67,8 +70,8 @@ fn load_api_config() -> Result<(ApiConfig, Environment, u64)> {
         field: "OPINION_API_KEY".into(),
     })?;
 
-    let rest_base_url = std::env::var("OPINION_REST_URL")
-        .unwrap_or_else(|_| REST_API_BASE_URL.to_string());
+    let rest_base_url =
+        std::env::var("OPINION_REST_URL").unwrap_or_else(|_| REST_API_BASE_URL.to_string());
 
     let environment = std::env::var("OPINION_ENV")
         .ok()
@@ -239,7 +242,9 @@ fn summarize_master_market_list(
             });
         *status_counts.entry(status_key).or_insert(0) += 1;
 
-        let type_key = market_type.map(|t| t.to_string()).unwrap_or_else(|| "none".to_string());
+        let type_key = market_type
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "none".to_string());
         *type_counts.entry(type_key).or_insert(0) += 1;
 
         let yes_id = yes_token_id.or(yes_pos).map(|v| v.as_str()).unwrap_or("0");
@@ -292,7 +297,9 @@ fn summarize_master_market_list(
     (status_counts, type_counts, missing_tokens, total_entries)
 }
 
-fn summarize_markets(markets: &[opinion_hft::data::rest::ApiMarket]) -> (HashMap<String, usize>, HashMap<String, usize>) {
+fn summarize_markets(
+    markets: &[opinion_hft::data::rest::ApiMarket],
+) -> (HashMap<String, usize>, HashMap<String, usize>) {
     let mut status_counts: HashMap<String, usize> = HashMap::new();
     let mut type_counts: HashMap<String, usize> = HashMap::new();
 

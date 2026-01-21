@@ -3129,6 +3129,7 @@ dependencies = [
  "mockall",
  "nonzero_ext",
  "polars",
+ "polars-parquet",
  "priority-queue",
  "proptest",
  "rand 0.8.5",

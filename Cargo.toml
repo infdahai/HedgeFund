@@ -45,7 +45,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 rusqlite = { version = "0.31", features = ["bundled"] }
-polars = { version = "0.45", default-features = false, features = ["parquet", "polars-io", "dtype-struct", "fmt"], optional = true }
+polars = { version = "0.45", default-features = false, features = ["parquet", "polars-io", "dtype-struct", "fmt", "lazy", "dtype-date", "dtype-datetime", "dtype-time"], optional = true }
+polars-parquet = { version = "0.45", default-features = false, optional = true }
 
 # Observability
 tracing = "0.1"
@@ -59,7 +60,6 @@ anyhow = "1.0"
 hex = "0.4"
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-polars = { version = "0.45", default-features = false, features = ["lazy", "parquet", "fmt", "dtype-struct", "dtype-date", "dtype-datetime", "dtype-time"] }
 rayon = "1.10"
 
 # Environment configuration
@@ -94,7 +94,7 @@ debug = true
 [features]
 default = ["test-harness"]
 test-harness = []
-polars = ["dep:polars"]
+polars = ["dep:polars", "dep:polars-parquet"]
 
 [profile.test]
 opt-level = 1

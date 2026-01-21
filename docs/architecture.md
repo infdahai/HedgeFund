@@ -1756,10 +1756,6 @@ Opinion Trade-specific strategy additions
 Mint-Sell arbitrage: execute when sum(bids) > 1.0 after fees.
 Neg-Risk arbitrage: buy all outcomes when sum(asks) < 1.0 after fees.
 
-Risk guardrail addition
-
-Max holding time: force exit if a position remains open beyond X minutes.
-
 ---
 
 ## 11.2 Strategy Learning Roadmap (Structured Data Lake)
@@ -1805,7 +1801,7 @@ Data contracts (Parquet datasets):
   - `bids` (list<struct<p: f64, s: f64>>), `asks` (list<struct<p: f64, s: f64>>)
   - `p`/`s` keep nested field metadata compact; document mapping in code.
   - List order defines depth (index 0 = best).
-- `scan_stats` (one row per scan cycle):
+- `scan_stats` (one row per scan cycle) **[Required by P2 - Strategy Iteration]**:
   - `scan_ts_us` (i64), `duration_us` (u64), `markets_scanned` (u64)
   - `yesno_checked`/`yesno_found`/`yesno_missing_ask`/`yesno_cost_ge_one`
   - `yesno_low_liquidity`/`yesno_below_min_notional`/`yesno_below_min_profit`
@@ -1840,6 +1836,7 @@ Rotation policy:
 - Rotate hourly or when file exceeds a size threshold (default 100MB).
 - Directory structure uses Hive partitioning: `.../date=YYYY-MM-DD/hour=HH/`.
 - File name uses `part-000.parquet` with a monotonically increasing part index per partition.
+- On startup, scan the partition directory to resume the next part index and prevent overwrites.
 - Store `schema_version`, `git_commit`, `config_hash` as Parquet file metadata.
 
 Sampling policy:
@@ -1903,199 +1900,531 @@ struct StrategySnapshot {
 
 ### Stage B: Data Pipeline (EC2 -> S3)
 
-Intent: decouple trading node from data ingestion.
+**Intent**: Decouple trading node from data ingestion. The trading process should never handle S3 credentials or perform network uploads.
 
-- Use a sidecar uploader (cron, systemd timer, or Filebeat/Vector).
-- Watch rotated Parquet files, upload to S3, then delete locally.
-- Keep the trading process unaware of S3 credentials.
+**Priority**: P3 (after Stage C research workflow is validated)
 
-Minimal pipeline (cron or systemd timer):
+#### Architecture Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              EC2 Trading Node                                        │
+│                                                                                      │
+│  ┌─────────────────────┐                    ┌─────────────────────────────────────┐  │
+│  │   Trading Process   │                    │        Sidecar Uploader             │  │
+│  │   (parquet.rs)      │                    │        (systemd timer)              │  │
+│  │                     │                    │                                     │  │
+│  │   Writes to:        │     inotify/       │   1. Watch for rotated files        │  │
+│  │   data/parquet/     │────────────────────▶   2. Skip current hour (in-use)    │  │
+│  │   ├─ date=.../      │     hourly         │   3. Upload to S3                   │  │
+│  │   └─ hour=.../      │     rotation       │   4. Delete local after success     │  │
+│  │                     │                    │   5. Log metrics                    │  │
+│  └─────────────────────┘                    └──────────────┬──────────────────────┘  │
+│                                                            │                         │
+└────────────────────────────────────────────────────────────┼─────────────────────────┘
+                                                             │
+                                                             ▼
+                                              ┌──────────────────────────────┐
+                                              │         S3 Bucket            │
+                                              │                              │
+                                              │  orderbook_snapshots_v1/     │
+                                              │  ├─ date=2026-01-20/         │
+                                              │  │  ├─ hour=00/              │
+                                              │  │  │  └─ part-000000.parquet│
+                                              │  │  └─ hour=01/              │
+                                              │  └─ date=2026-01-21/         │
+                                              │                              │
+                                              │  scan_stats_v1/              │
+                                              │  └─ ...                      │
+                                              └──────────────────────────────┘
+```
+
+#### Design Principles
+
+1. **Separation of Concerns**: Trading process only writes locally; uploader handles S3.
+2. **No Blocking**: Upload runs asynchronously, never blocks trading loop.
+3. **Fault Tolerance**: Failed uploads are retried; local files preserved until confirmed.
+4. **Credential Isolation**: S3 credentials only in uploader, not trading process.
+
+#### Implementation Options
+
+**Option A: Shell Script + Systemd Timer (Recommended for MVP)**
 
 ```bash
-# Upload completed files (example: move all rotated files, keep current hour local)
-aws s3 mv "data/parquet/orderbook_snapshots_v1/" "s3://your-bucket/orderbook_snapshots_v1/" --exclude "*" --include "date=*/hour=*/*.parquet"
+#!/bin/bash
+# /opt/opinion-hft/scripts/upload_parquet.sh
+
+set -euo pipefail
+
+S3_BUCKET="${S3_BUCKET:-opinion-hft-data}"
+PARQUET_DIR="${PARQUET_DIR:-/opt/opinion-hft/data/parquet}"
+CURRENT_HOUR=$(date -u +"%Y-%m-%d/hour=%H")
+UPLOAD_COUNT=0
+ERROR_COUNT=0
+
+log() { echo "[$(date -Iseconds)] $*"; }
+
+# Find all parquet files, exclude current hour (still being written)
+find "$PARQUET_DIR" -name "*.parquet" -type f | while read -r file; do
+    relative_path="${file#$PARQUET_DIR/}"
+    
+    # Extract partition path (date=YYYY-MM-DD/hour=HH)
+    partition=$(echo "$relative_path" | grep -oP 'date=\d{4}-\d{2}-\d{2}/hour=\d{2}' || true)
+    
+    # Skip current hour (file may still be written)
+    if [[ "$partition" == "date=$CURRENT_HOUR" ]]; then
+        continue
+    fi
+    
+    # Upload to S3
+    if aws s3 cp "$file" "s3://$S3_BUCKET/$relative_path" --only-show-errors; then
+        log "Uploaded: $relative_path"
+        rm -f "$file"
+        ((UPLOAD_COUNT++)) || true
+    else
+        log "ERROR: Failed to upload $relative_path"
+        ((ERROR_COUNT++)) || true
+    fi
+done
+
+# Clean up empty directories
+find "$PARQUET_DIR" -type d -empty -delete 2>/dev/null || true
+
+log "Upload complete: $UPLOAD_COUNT files, $ERROR_COUNT errors"
+
+# Exit with error if any uploads failed
+[[ $ERROR_COUNT -eq 0 ]] || exit 1
 ```
+
+**Systemd Service:**
+
+```ini
+# /etc/systemd/system/parquet-upload.service
+[Unit]
+Description=Upload rotated Parquet files to S3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=opinion-hft
+ExecStart=/opt/opinion-hft/scripts/upload_parquet.sh
+Environment=S3_BUCKET=opinion-hft-data
+Environment=PARQUET_DIR=/opt/opinion-hft/data/parquet
+StandardOutput=append:/var/log/parquet-upload.log
+StandardError=append:/var/log/parquet-upload.log
+```
+
+**Systemd Timer:**
+
+```ini
+# /etc/systemd/system/parquet-upload.timer
+[Unit]
+Description=Run parquet upload every hour at :05
+
+[Timer]
+OnCalendar=*:05:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
+```
+
+**Option B: Rust Sidecar Binary (Future, if more control needed)**
+
+```rust
+// src/bin/parquet_uploader.rs (skeleton)
+use aws_sdk_s3::Client;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::path::Path;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = aws_config::load_from_env().await;
+    let s3 = Client::new(&config);
+    
+    let parquet_dir = std::env::var("PARQUET_DIR")
+        .unwrap_or_else(|_| "data/parquet".into());
+    
+    // Use inotify to watch for file close events
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
+    watcher.watch(Path::new(&parquet_dir), RecursiveMode::Recursive)?;
+    
+    for event in rx {
+        if let Ok(event) = event {
+            // Handle CLOSE_WRITE events for completed files
+            // Skip current hour, upload, delete on success
+        }
+    }
+    Ok(())
+}
+```
+
+#### S3 Directory Structure
+
+```text
+s3://opinion-hft-data/
+├── orderbook_snapshots_v1/
+│   ├── date=2026-01-20/
+│   │   ├── hour=00/
+│   │   │   ├── part-000000.parquet
+│   │   │   └── part-000001.parquet
+│   │   ├── hour=01/
+│   │   │   └── part-000000.parquet
+│   │   └── ...
+│   └── date=2026-01-21/
+│       └── ...
+├── scan_stats_v1/
+│   └── date=2026-01-20/
+│       └── ...
+└── confirmed_orders/           # Optional: SQLite exports
+    └── ...
+```
+
+#### Configuration
+
+```bash
+# Environment variables for uploader (NOT in trading process)
+S3_BUCKET=opinion-hft-data
+S3_REGION=ap-northeast-1
+PARQUET_DIR=/opt/opinion-hft/data/parquet
+
+# AWS credentials (use IAM role on EC2, or explicit keys)
+AWS_ACCESS_KEY_ID=***
+AWS_SECRET_ACCESS_KEY=***
+
+# Optional: Local retention before upload
+PARQUET_LOCAL_RETENTION_HOURS=24
+```
+
+#### Monitoring & Alerting
+
+```yaml
+# CloudWatch Alarm (Terraform example)
+resource "aws_cloudwatch_metric_alarm" "upload_failure" {
+  alarm_name          = "parquet-upload-failure"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "Errors"
+  namespace           = "OpinionHFT/DataPipeline"
+  period              = 3600
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Parquet upload failed for 3 consecutive hours"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+```
+
+#### Implementation Checklist
+
+| Task | Priority | Status |
+|------|----------|--------|
+| Shell upload script | P0 | Pending |
+| Systemd timer config | P0 | Pending |
+| S3 bucket + IAM role | P0 | Pending |
+| Log rotation for upload logs | P1 | Pending |
+| CloudWatch metrics/alarms | P1 | Pending |
+| Rust sidecar (optional) | P2 | Deferred |
+
+#### Non-Goals
+
+- No S3 SDK in trading process
+- No real-time streaming (hourly batch is sufficient)
+- No complex retry logic in MVP (systemd timer handles retries)
 
 ### Stage C: Research Backend (offline)
 
-Intent: convert recorded data into validated strategy parameters without touching production.
+**Intent**: Convert recorded data into validated strategy parameters using the **exact same logic** as production, but running offline against Parquet history.
 
-#### Decision (Tooling)
+#### 1. Architecture: The Shared Kernel Pattern
 
-**Primary stack: Pure Rust + Polars (Lazy API)**
-
-Rationale:
-- Avoids implementation drift by reusing production logic (fees, thresholds, arbitrage detection).
-- Keeps a single language/toolchain (Rust) and removes Python env overhead.
-- Polars Lazy API provides predicate/projection pushdown and streaming execution for large Parquet datasets.
-
-**Hybrid execution model (mandatory):**
-- Use Polars for IO + stateless filtering/aggregation.
-- Use Rust iterators for stateful simulation (latency, position lock, risk rules).
-- Do **not** attempt to encode stateful trading logic in Polars expressions.
+The system guarantees **Zero Implementation Drift** by sharing the core library between Live and Backtest engines.
 
 ```text
-Parquet (Stage A)            Stage C Pipeline (Offline)
-┌────────────────────┐       ┌────────────────────────────────────────────┐
-│ orderbook snapshots │──────▶│ Polars Lazy (filter/scan/partition prune) │
-│ scan stats          │       └───────────────┬────────────────────────────┘
-└────────────────────┘                       │
-                                             ▼
-                              ┌───────────────────────────────────┐
-                              │ Rust Iterator Replay (Stateful)   │
-                              │ - SimState (balance/locks)        │
-                              │ - latency + risk rules            │
-                              │ - reuse Strategy Core             │
-                              └───────────────┬───────────────────┘
-                                              ▼
-                              ┌───────────────────────────────────┐
-                              │ Reports / Params / Diagnostics    │
-                              └───────────────────────────────────┘
+┌─────────────────────────────────────┐
+│           Core Strategy Lib         │
+│         (src/strategy/core/)        │
+│                                     │
+│  • Fee Calculator (Pure Fn)         │
+│  • Arb Detector (State Machine)     │
+│  • Risk Rules (Pure Logic)          │
+└──────────────────┬──────────────────┘
+                   │
+         ┌─────────┴─────────┐
+         ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐
+│   Live Engine   │ │ Backtest Engine │
+│  (src/main.rs)  │ │ (src/bin/res..) │
+│                 │ │                 │
+│  • WebSocket    │ │ • Polars Reader │
+│  • REST Client  │ │ • Replay Loop   │
+│  • Real Wallet  │ │ • Mock Wallet   │
+└─────────────────┘ └─────────────────┘
 ```
 
-**Optional:** DuckDB for ad-hoc SQL exploration (not required for the core workflow).
+#### 2. Component Implementation Details
 
-#### Inputs
+**A. Core Strategy Lib (`src/strategy/core/`)**
+*Shared "Source of Truth". No Python logic allowed here.*
 
-- Parquet datasets produced by Stage A (Hive partitioning):
-  - `orderbook_snapshots_v1/date=YYYY-MM-DD/hour=HH/part-*.parquet`
-  - `scan_stats_v1/date=YYYY-MM-DD/hour=HH/part-*.parquet`
-- SQLite `confirmed_orders` (authoritative fills) for PnL attribution.
+*   **Fee Calculator (`fees.rs`)**:
+    *   Symmetric curve: `Fee = topic_rate * price * (1 - price)`.
+    *   Constraints: Min fee $0.50, Max rate at $0.50, Referral discount applied.
+*   **Arbitrage Detector (`detector.rs`)**:
+    *   Single-pass state machine detecting: `YesNo` (Sum < 1), `NegRisk` (Sum < 1), `MintSell` (Sum > 1), `SpreadAnomaly`.
+    *   Returns `ArbitrageOpportunity` with precise `total_spend` (inc. fees) and `net_profit`.
+*   **Risk Rules (`risk.rs`)**:
+    *   Stateless pre-approval checks (Max Exposure, Max Trade Notional).
 
-#### Core Components
+**B. Backtest Engine (`src/bin/research.rs`)**
+*Hybrid Execution Model: Stateless I/O + Stateful Simulation.*
 
-1. **Data Preparation (Polars, stateless)**
-   - Use `polars::LazyFrame::scan_parquet()` with glob patterns.
-   - Enable streaming for datasets larger than RAM.
-   - Partition pruning via Hive directory structure (`date=`, `hour=`).
-   - Apply stateless filters (spread, liquidity, min notional) and sort by timestamp.
+1.  **Data Loading (Polars Lazy API)**:
+    *   Scans Parquet using Hive partitioning (`date=*/hour=*`).
+    *   Applies stateless filters (spread, liquidity) pushing predicates down to scan level.
+    *   Streams data into Rust iterators (keeps RAM usage low).
+2.  **Simulation Loop (Rust + Rayon)**:
+    *   Parallelizes processing by `market_id`.
+    *   **Latency Model**: "Next-Tick Execution" (Execute at T+1). Simulates ~200ms reaction time.
+    *   **Constraint Model**: Applies 3-5s confirmation lock (funds unavailable during confirmation).
+3.  **Mock Wallet (`SimState`)**:
+    *   Tracks virtual balance, inventory, and pending transactions.
 
-2. **Data Cleaning & Normalization**
-   - Enforce price precision: round to 1 decimal (0.1 - 0.9).
-   - Reject rows that violate minimum notional (use runtime config default).
-   - Strictly reuse fee calculation from `strategy/core/fees.rs` to avoid drift.
+#### 3. State Model (SimState)
 
-3. **Stateful Simulation (Rust iterator)**
-   - Partition by `market_id` and simulate each market independently.
-   - Use Rayon to parallelize across markets.
-   - Maintain per-market state (position, cash, `unlock_ts`).
-   - **Blind exposure:** if `ts < unlock_ts`, skip new entries.
-
-4. **Descriptive Research (Market Microstructure Report)**
-   - Liquidity availability: % of time top-of-book is non-empty.
-   - Spread distribution (best_ask - best_bid) and tail risk.
-   - Slippage curves: cost to buy/sell 100/500/1000 shares.
-   - Opportunity frequency: how often `yes_ask + no_ask < 1.0 - fee` occurs.
-
-5. **Offline Replay & Fill Simulation**
-   - Replay snapshots in time order using a conservative fill simulator.
-   - **Latency modeling:** simulate order arrival at T + 200ms (configurable).
-   - **State reconstruction:** execute against the snapshot at arrival time, not signal time.
-   - **Blind exposure:** account for 3-5s confirmation lock before funds are reusable.
-   - Output `potential_trades.csv` with `trigger_time`, `market_id`, `expected_profit`, `duration_ms`.
-
-#### Outputs
-
-- Parameter updates for `config.toml` (spread thresholds, min liquidity, min profit).
-- CSV/Parquet reports for iteration (not runtime overrides).
-
-#### Guardrails
-
-- No Python re-implementation of core strategy logic.
-- No direct changes to production behavior from research runs.
-- Keep backtest logic deterministic and reproducible (fixed seed + fixed snapshot order).
-
-#### Stateful Model (SimState)
-
-Define an explicit minimal virtual-exchange state to avoid logic drift and to express lock/confirmation.
+We simulate a minimal "Virtual Exchange" to track capital lock-up and PnL.
 
 ```rust
 struct SimState {
     // Capital state
-    virtual_balance: f64,
-    virtual_inventory: f64,
+    balance: f64,
+    inventory: HashMap<String, f64>, // TokenID -> Amount
 
-    // Blind exposure
-    unlock_ts_us: i64,
-    pending_txs: Vec<PendingTx>,
+    // Blind exposure (Latency & Lock modeling)
+    unlock_ts_us: i64,               // Funds locked until this time
+    pending_txs: Vec<PendingTx>,     // Txs submitted but not confirmed
 
     // Metrics
-    total_trades: u64,
-    winning_trades: u64,
     max_drawdown: f64,
-}
-
-struct PendingTx {
-    submitted_at_us: i64,
-    expected_confirm_at_us: i64, // submitted_at + 3000-5000ms
-    cost: f64,
+    winning_txs: u64,
 }
 ```
 
-#### Simulation Loop (Minimal Virtual Exchange)
+#### 4. Inputs & Outputs
 
-1. **Advance time:** iterate ticks in time order.
-2. **Confirm pending:** release funds when `current_ts >= expected_confirm_at_us`.
-3. **Check lock:** if `current_ts < unlock_ts_us`, skip signal evaluation.
-4. **Evaluate signal:** reuse production logic for detection + fee model.
-5. **Submit trade:** create `PendingTx`, update `unlock_ts_us`, record trade.
+**Inputs**:
+*   **Snapshots**: `data/parquet/orderbook_snapshots_v1/date=.../*.parquet`
+*   **Truth**: `data/opinion-hft.sqlite` (Table: `confirmed_orders` for reconciliation)
 
-This “stateful core” must remain in Rust, not Polars.
+**Outputs**:
+*   `potential_trades.csv`: All signaled trades with expected PnL.
+*   `config_recommendations.toml`: Optimized thresholds (min_profit, min_liquidity).
 
-#### Latency Modeling (MVP)
+#### 5. Implementation Checklist
 
-Prefer **Next-Tick Execution** rather than a complex time buffer:
-- Signal at tick `T`.
-- Execute at tick `T+1` using the new snapshot (more conservative).
-- If price worsened, treat as slippage loss; if condition no longer holds, skip.
+1.  [x] **Core Refactor**: Extract `strategy/core` shared library.
+2.  [ ] **CLI Tool**: `src/bin/research.rs` with Polars integration.
+3.  [ ] **SimState**: Implement `SimState` struct and lock logic.
+4.  [ ] **Reporting**: CSV export of trade logs and summary metrics.
 
-This approximates 200ms reaction latency while matching snapshot granularity.
+### P2: Strategy Iteration (Driven by Stage C Results)
 
-#### Suggested Deliverables
+**Intent**: Close the feedback loop from data collection → analysis → parameter optimization → validated production config.
 
-- `src/bin/research.rs` (or `src/bin/backtest.rs`) CLI with:
-  - `--date-range`, `--market-id`, `--min-profit`, `--output`
-  - `--latency-ms`, `--streaming`, `--report`
-- `reports/` output folder with summary CSVs and aggregate metrics.
+**Priority**: P2 (after Stage A recorder and Stage C research CLI are functional)
 
-#### Optional Visualization
+#### 1. Prediction Market Characteristics
 
-- Integrate `rerun` to visualize time series (best_bid, best_ask, signals, pnl) during replay.
-- Log **state changes** only (trade executions, lock/unlock, pnl updates) to reduce noise.
-- Goal: fast inspection of “why no trade” at specific timestamps without Python.
+Opinion.trade is a **prediction market**, not a traditional exchange. Strategy iteration must account for these differences:
 
-#### Scalability & Evolution
+| Aspect | Traditional Market (BTC) | Prediction Market (Opinion) |
+|--------|--------------------------|----------------------------|
+| Price meaning | Asset value | Probability of outcome |
+| Price range | Unbounded | 0.0 - 1.0 (probability) |
+| Resolution | Never | Fixed date (market resolves) |
+| Arbitrage type | Cross-exchange price diff | Sum deviation from 1.0 |
+| Exit strategy | Stop-loss, take-profit | Hold until resolution |
 
-- Parquet is the storage contract; compute is decoupled from storage.
-- Scale-up path: larger single machine (more CPU/RAM/IO) without code changes.
-- Scale-out path (future): Iceberg metadata + Spark/Trino/other distributed engines.
-- DuckDB remains optional for ad-hoc SQL; it is not required for an Iceberg migration.
+**Market Types**:
 
-#### Implementation Checklist (Stage C)
+| Type | Structure | Arbitrage Condition | Example |
+|------|-----------|---------------------|---------|
+| **Binary (Yes/No)** | 2 outcomes | `yes_ask + no_ask < 1.0` | "Will BTC hit 100k?" |
+| **Categorical (Multi)** | N outcomes (N ≥ 3) | `sum(all_asks) < 1.0` | "Who wins election?" (A/B/C/D) |
 
-1. Confirm Stage A Parquet recorder writes `local_recv_ts_us` (time base for replay).
-2. Add `src/bin/research.rs` CLI (Polars load → Rust iterator sim → reports).
-3. Reuse `opinion_hft::strategy` logic; do not re-implement in research.
-4. Implement `SimState` and pending confirmation flow.
-5. (Optional) Add Rerun logging for trade points + PnL curve.
+**Key insight**: Once arbitrage is executed (all outcomes bought at sum < 1.0), profit is **locked until resolution**. No need for:
+- Stop-loss logic (profit already guaranteed)
+- Price-based exit signals (irrelevant once position is hedged)
 
-#### Example (Polars Lazy API)
+**Timeout consideration** (low priority): If resolution is months away, capital is locked. An optional `max_holding_days` parameter could trigger early exit if favorable prices appear, but this is **not required for MVP** since arbitrage profit is already secured.
 
-```rust
-let df = LazyFrame::scan_parquet(
-        "data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet",
-        Default::default(),
-    )?
-    .filter(col("spread").gt(lit(0.05)))
-    .select([
-        col("market_id"),
-        col("outcome"),
-        col("best_bid"),
-        col("best_ask"),
-    ])
-    .with_streaming(true)
-    .collect()?;
+#### 2. Defining "Optimal Parameters"
+
+For prediction market arbitrage, optimization targets depend on goals:
+
+| Objective | Formula | When to Use |
+|-----------|---------|-------------|
+| **Max PnL** | `sum(net_profit)` | Aggressive, more trades |
+| **Risk-Adjusted Return** | `PnL / max_drawdown` | Balanced (recommended) |
+| **Capital Efficiency** | `PnL / avg_locked_capital` | When capital is scarce |
+| **Win Rate** | `winning / total` | Conservative, fewer trades |
+
+**Recommended default**: `PnL / max_drawdown` (simple risk-adjusted metric).
+
+#### 3. Iteration Loop Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        P2: Strategy Iteration Loop                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│   ┌────────────────┐                                                             │
+│   │  Stage A Data  │                                                             │
+│   │  - snapshots   │                                                             │
+│   │  - scan_stats  │◀─────────────────────────────────────────────────────────┐  │
+│   └───────┬────────┘                                                          │  │
+│           │                                                                   │  │
+│           ▼                                                                   │  │
+│   ┌────────────────┐    ┌────────────────┐    ┌────────────────┐              │  │
+│   │ Microstructure │    │   Parameter    │    │   Validation   │              │  │
+│   │   Analysis     │───▶│     Sweep      │───▶│    Report      │              │  │
+│   │                │    │                │    │                │              │  │
+│   │ • spread dist  │    │ • grid search  │    │ • train/test   │              │  │
+│   │ • liquidity %  │    │ • objective fn │    │ • gap analysis │              │  │
+│   │ • opp frequency│    │ • rayon ∥      │    │ • recommend    │              │  │
+│   └────────────────┘    └────────────────┘    └───────┬────────┘              │  │
+│                                                       │                       │  │
+│                                                       ▼                       │  │
+│                                              ┌────────────────┐               │  │
+│                                              │  Config Output │               │  │
+│                                              │                │               │  │
+│                                              │ recommended_   │───────────────┘  │
+│                                              │ config.json    │                  │
+│                                              └────────────────┘                  │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+#### 4. Component Details
+
+**A. Microstructure Analysis**
+
+Understand market characteristics before parameter tuning.
+
+| Metric | Description | Diagnostic Value |
+|--------|-------------|------------------|
+| `arb_spread_dist` | `sum(asks) - 1.0` percentiles (p50, p95) | How often is arb possible? |
+| `liquidity_pct` | % of ticks with non-empty top-of-book | Can we execute? |
+| `opp_freq_per_hour` | Count of `sum < 1.0 - fees` per hour | Market activity |
+| `avg_executable_size` | Mean size when opportunity exists | Position sizing |
+| `binary_vs_categorical` | Ratio of market types | Strategy mix |
+
+**Output**: `reports/microstructure.csv`
+
+```bash
+cargo run --bin research -- --mode microstructure \
+  --input "data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet" \
+  --output reports/microstructure.csv
+```
+
+**B. Parameter Sweep**
+
+Grid search over parameter space with parallel simulation.
+
+| Parameter | Range | Rationale |
+|-----------|-------|-----------|
+| `min_profit_rate` | 0.001, 0.003, 0.005, 0.007, 0.01 | Trade-off: volume vs per-trade profit |
+| `min_liquidity` | 0, 50, 100, 200 | Filter illiquid opportunities |
+| `confirm_delay_us` | 3M, 4M, 5M | Sensitivity to chain latency |
+
+**Output**: `reports/param_sweep.csv`
+
+```csv
+min_profit_rate,min_liquidity,trades,pnl,win_rate,max_drawdown,risk_adj
+0.001,0,245,12.34,0.78,0.05,246.8
+0.003,50,142,15.67,0.85,0.03,522.3
+0.005,100,87,11.23,0.91,0.02,561.5
+```
+
+```bash
+cargo run --bin research -- --mode sweep \
+  --min-profit-rate 0.001,0.003,0.005,0.007 \
+  --min-liquidity 0,50,100,200 \
+  --output reports/param_sweep.csv
+```
+
+**C. Train/Test Validation**
+
+Prevent overfitting to specific time periods.
+
+1. Split data by time: 70% train, 30% test
+2. Run sweep on train set
+3. Evaluate top-3 configs on test set
+4. Report performance gap
+
+**Output Example**:
+
+```
+=== Validation Report ===
+Best config: min_profit_rate=0.003, min_liquidity=50.0
+
+        Train     Test      Gap
+PnL     15.67     14.23    -9.2%
+WinRate 0.85      0.82     -3.5%
+
+Recommendation: Config stable (gap < 15%)
+```
+
+**D. Config Output**
+
+Export recommended parameters for production use.
+
+**Output**: `reports/recommended_config.json`
+
+```json
+{
+  "generated_at": "2026-01-21T12:00:00Z",
+  "data_period": { "start": "2026-01-15", "end": "2026-01-20" },
+  "recommended": {
+    "min_profit_rate": 0.003,
+    "min_liquidity": 50.0
+  },
+  "validation": {
+    "train_pnl": 15.67,
+    "test_pnl": 14.23,
+    "gap_pct": -9.2
+  }
+}
+```
+
+#### 5. Dependency: scan_stats Dataset
+
+P2 requires `scan_stats` from Stage A to diagnose "why no opportunities".
+
+See Stage A: `scan_stats` marked as **[Required by P2 - Strategy Iteration]**.
+
+Without `scan_stats`:
+- Cannot distinguish "no data" vs "opportunities filtered out"
+- Cannot tune parameters based on skip reasons
+
+#### 6. Implementation Checklist
+
+| Task | Priority | Depends On | Status |
+|------|----------|------------|--------|
+| `--mode microstructure` | P0 | Stage C CLI | Pending |
+| `--mode sweep` with grid | P0 | Stage C CLI | Pending |
+| Train/test split logic | P1 | Sweep mode | Pending |
+| JSON config output | P1 | Validation | Pending |
+| `scan_stats` recorder | P1 | Stage A | Pending |
+
+#### 7. Non-Goals
+
+- No automatic production config updates (human review required)
+- No ML-based optimization (grid search sufficient for MVP)
+- No real-time parameter adaptation (batch analysis only)
+- No max-holding-time exit logic (profit already locked on execution)
 
 ### Stage D: Execution Evolution (Optimistic Execution)
 

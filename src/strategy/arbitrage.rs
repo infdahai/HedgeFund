@@ -161,7 +161,8 @@ mod tests {
         ];
 
         // Total: 0.22 + 0.25 + 0.28 + 0.20 = 0.95
-        let opportunity = detector.detect_neg_risk_arbitrage("MULTI-MARKET", &outcomes, DETECTED_AT);
+        let opportunity =
+            detector.detect_neg_risk_arbitrage("MULTI-MARKET", &outcomes, DETECTED_AT);
 
         assert!(opportunity.is_some());
         let opp = opportunity.unwrap();

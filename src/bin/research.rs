@@ -254,7 +254,9 @@ fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
     let idx_local_recv = find_index_optional(&names, "local_recv_ts_us");
     let idx_snapshot_ts = find_index_optional(&names, "snapshot_ts");
     if idx_local_recv.is_none() && idx_snapshot_ts.is_none() {
-        return Err(anyhow!("missing timestamp column (expected local_recv_ts_us or snapshot_ts)"));
+        return Err(anyhow!(
+            "missing timestamp column (expected local_recv_ts_us or snapshot_ts)"
+        ));
     }
     let idx_best_bid = find_index_optional(&names, "best_bid");
     let idx_best_ask = find_index_optional(&names, "best_ask");
@@ -270,8 +272,8 @@ fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
         let row = df.get_row(idx)?;
         let values = row.0;
 
-        let market_id = any_to_string(&values[idx_market])
-            .ok_or_else(|| anyhow!("invalid market_id"))?;
+        let market_id =
+            any_to_string(&values[idx_market]).ok_or_else(|| anyhow!("invalid market_id"))?;
         let ts_us = if let Some(idx) = idx_local_recv {
             any_to_i64(&values[idx]).ok_or_else(|| anyhow!("invalid local_recv_ts_us"))?
         } else if let Some(idx) = idx_snapshot_ts {
@@ -306,7 +308,9 @@ fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
 
         let outcome = idx_outcome
             .and_then(|idx| any_to_string(&values[idx]))
-            .or_else(|| idx_pair.and_then(|idx| any_to_string(&values[idx]).and_then(derive_outcome)))
+            .or_else(|| {
+                idx_pair.and_then(|idx| any_to_string(&values[idx]).and_then(derive_outcome))
+            })
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
         let outcome_upper = outcome.to_uppercase();
@@ -338,9 +342,9 @@ fn build_market_ticks(rows: Vec<SnapshotRow>) -> HashMap<String, Vec<MarketTick>
     for row in rows {
         let tick = markets
             .entry(row.market_id.clone())
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .entry(row.ts_us)
-            .or_insert_with(TickAccumulator::default);
+            .or_default();
 
         let book = TickBook {
             best_bid: row.best_bid,
@@ -500,18 +504,39 @@ fn detect_best_opportunity(
 ) -> Option<ArbitrageOpportunity> {
     let yes_ob = build_orderbook(&market.yes_pair, &tick.yes);
     let no_ob = build_orderbook(&market.no_pair, &tick.no);
+    let detected_at = if tick.ts_us <= 0 {
+        0
+    } else {
+        (tick.ts_us as u64) / 1_000_000
+    };
 
     let mut opportunities = Vec::new();
-    if let Some(opportunity) = detector.detect_yesno_arbitrage(market, &yes_ob, &no_ob) {
+    if let Some(opportunity) = detector.detect_yesno_arbitrage(
+        market,
+        &yes_ob.bids,
+        &yes_ob.asks,
+        &no_ob.bids,
+        &no_ob.asks,
+        detected_at,
+    ) {
         opportunities.push(opportunity);
     }
-    if let Some(opportunity) = detector.detect_mint_sell_arbitrage(market, &yes_ob, &no_ob) {
+    if let Some(opportunity) = detector.detect_mint_sell_arbitrage(
+        market,
+        &yes_ob.bids,
+        &yes_ob.asks,
+        &no_ob.bids,
+        &no_ob.asks,
+        detected_at,
+    ) {
         opportunities.push(opportunity);
     }
 
-    opportunities
-        .into_iter()
-        .max_by(|a, b| a.net_profit_abs.partial_cmp(&b.net_profit_abs).unwrap_or(std::cmp::Ordering::Equal))
+    opportunities.into_iter().max_by(|a, b| {
+        a.net_profit_abs
+            .partial_cmp(&b.net_profit_abs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 fn execute_trade(
@@ -623,10 +648,7 @@ fn print_summary(reports: &[MarketReport], trades: &[TradeRecord], config: &CliC
     let total_trades: u64 = reports.iter().map(|r| r.total_trades).sum();
     let total_pnl: f64 = reports.iter().map(|r| r.pnl).sum();
     let total_fees: f64 = reports.iter().map(|r| r.total_fees).sum();
-    let max_drawdown = reports
-        .iter()
-        .map(|r| r.max_drawdown)
-        .fold(0.0, f64::max);
+    let max_drawdown = reports.iter().map(|r| r.max_drawdown).fold(0.0, f64::max);
     let avg_latency = reports
         .iter()
         .map(|r| r.avg_confirm_latency_us)
@@ -646,10 +668,7 @@ fn print_summary(reports: &[MarketReport], trades: &[TradeRecord], config: &CliC
     for report in reports.iter().filter(|r| r.total_trades > 0) {
         println!(
             "  market {} trades {} win_rate {:.2} pnl {:.6}",
-            report.market_id,
-            report.total_trades,
-            report.win_rate,
-            report.pnl
+            report.market_id, report.total_trades, report.win_rate, report.pnl
         );
     }
 }
@@ -662,7 +681,8 @@ fn write_trade_report(path: &str, trades: &[TradeRecord]) -> Result<()> {
         }
     }
 
-    let mut contents = String::from("market_id,ts_us,arb_type,total_spend,expected_profit,balance_after\n");
+    let mut contents =
+        String::from("market_id,ts_us,arb_type,total_spend,expected_profit,balance_after\n");
     for trade in trades {
         contents.push_str(&format!(
             "{},{},{},{:.6},{:.6},{:.6}\n",
@@ -736,7 +756,7 @@ fn derive_outcome(pair: String) -> Option<String> {
 fn extract_top_from_list(value: &AnyValue) -> Option<(f64, f64)> {
     match value {
         AnyValue::List(series) => {
-            if series.len() == 0 {
+            if series.is_empty() {
                 return None;
             }
             let struct_series = series.struct_().ok()?;

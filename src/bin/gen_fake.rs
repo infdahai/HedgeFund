@@ -92,8 +92,11 @@ fn build_start_timestamp(date: &str, hour: &str) -> Result<i64> {
     let hour: u32 = hour
         .parse()
         .with_context(|| format!("invalid hour {hour}"))?;
-    let dt = NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(hour, 0, 0)
-        .ok_or_else(|| anyhow!("invalid hour {hour}"))?);
+    let dt = NaiveDateTime::new(
+        date,
+        chrono::NaiveTime::from_hms_opt(hour, 0, 0)
+            .ok_or_else(|| anyhow!("invalid hour {hour}"))?,
+    );
     let ts = dt.and_utc().timestamp_micros();
     Ok(ts)
 }
@@ -135,7 +138,7 @@ fn build_dataframe(start_ts_us: i64, config: &GenConfig) -> Result<(DataFrame, u
         );
 
         // Market 2: opportunity window
-        let is_opportunity = i >= 1000 && i < 1050;
+        let is_opportunity = (1000..1050).contains(&i);
         let (yes_bid, yes_ask, no_bid, no_ask) = if is_opportunity {
             (0.3, 0.4, 0.3, 0.4) // sum ask = 0.8 => arb
         } else {
@@ -189,36 +192,12 @@ fn push_snapshot(
     timestamps: &mut Vec<i64>,
 ) {
     push_row(
-        market_id,
-        "YES",
-        yes_bid,
-        yes_ask,
-        1000.0,
-        1000.0,
-        ts,
-        market_ids,
-        outcomes,
-        best_bids,
-        best_asks,
-        bid_sizes,
-        ask_sizes,
-        timestamps,
+        market_id, "YES", yes_bid, yes_ask, 1000.0, 1000.0, ts, market_ids, outcomes, best_bids,
+        best_asks, bid_sizes, ask_sizes, timestamps,
     );
     push_row(
-        market_id,
-        "NO",
-        no_bid,
-        no_ask,
-        1000.0,
-        1000.0,
-        ts,
-        market_ids,
-        outcomes,
-        best_bids,
-        best_asks,
-        bid_sizes,
-        ask_sizes,
-        timestamps,
+        market_id, "NO", no_bid, no_ask, 1000.0, 1000.0, ts, market_ids, outcomes, best_bids,
+        best_asks, bid_sizes, ask_sizes, timestamps,
     );
 }
 

@@ -1,7 +1,7 @@
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::interval;
@@ -16,11 +16,19 @@ use super::messages::{OrderUpdate, TradeRecord};
 #[derive(Debug, Clone)]
 pub enum WsEvent {
     Connected,
-    Disconnected { reason: String },
+    Disconnected {
+        reason: String,
+    },
     OrderUpdate(OrderUpdate),
     TradeRecord(TradeRecord),
-    MarketData { pair: String, data: String },
-    MarketTrade { pair: String, data: String },
+    MarketData {
+        pair: String,
+        data: String,
+    },
+    MarketTrade {
+        pair: String,
+        data: String,
+    },
     MarketDepthDiff {
         market_id: i64,
         outcome: Option<String>,
@@ -68,7 +76,11 @@ enum WsCommand {
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 impl WebSocketClient {
-    pub fn new(config: &WebSocketConfig, api_key: String, environment: crate::config::Environment) -> Self {
+    pub fn new(
+        config: &WebSocketConfig,
+        api_key: String,
+        environment: crate::config::Environment,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(1024);
 
         Self {
@@ -93,26 +105,23 @@ impl WebSocketClient {
         }
         let base_url = self.config.url.trim_end_matches('/');
         let url_str = format!("{}/?apikey={}", base_url, self.api_key);
-        
+
         tracing::info!("Connecting to WebSocket: {}?apikey=REDACTED", base_url);
-        
+
         // Build request with headers to avoid 400 Bad Request (WAF/API check)
-        let mut request = url_str.into_client_request()
+        let mut request = url_str
+            .into_client_request()
             .map_err(|e| Error::WebSocketConnectionError(format!("invalid URL: {}", e)))?;
-            
+
         let headers = request.headers_mut();
-        headers.insert(
-            "User-Agent",
-            "opinion-hft/1.0".parse().unwrap()
-        );
+        headers.insert("User-Agent", "opinion-hft/1.0".parse().unwrap());
         // Some APIs require Origin matching the host
-        headers.insert(
-            "Origin",
-            "https://opinion.trade".parse().unwrap()
-        );
+        headers.insert("Origin", "https://opinion.trade".parse().unwrap());
 
         if self.environment.is_local() {
-            tracing::info!("Local environment detected. Ensure HTTPS_PROXY is configured if proxy is needed.");
+            tracing::info!(
+                "Local environment detected. Ensure HTTPS_PROXY is configured if proxy is needed."
+            );
         }
 
         let (ws_stream, _) = connect_async(request)
@@ -387,7 +396,11 @@ fn parse_depth_diff(text: &str) -> Option<WsEvent> {
         market_id: i64,
         #[serde(default)]
         outcome: Option<String>,
-        #[serde(rename = "outcomeSide", default, deserialize_with = "deserialize_option_i64")]
+        #[serde(
+            rename = "outcomeSide",
+            default,
+            deserialize_with = "deserialize_option_i64"
+        )]
         outcome_side: Option<i64>,
         side: String,
         price: String,
@@ -431,14 +444,22 @@ mod tests {
     #[test]
     fn test_websocket_client_creation() {
         let config = mock_config();
-        let client = WebSocketClient::new(&config, "test-key".into(), crate::config::Environment::default());
+        let client = WebSocketClient::new(
+            &config,
+            "test-key".into(),
+            crate::config::Environment::default(),
+        );
         assert!(client.command_tx.is_none());
     }
 
     #[test]
     fn test_event_subscription() {
         let config = mock_config();
-        let client = WebSocketClient::new(&config, "test-key".into(), crate::config::Environment::default());
+        let client = WebSocketClient::new(
+            &config,
+            "test-key".into(),
+            crate::config::Environment::default(),
+        );
         let _rx = client.subscribe_events();
     }
 

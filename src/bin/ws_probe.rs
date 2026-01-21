@@ -2,7 +2,7 @@ use std::env;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use opinion_hft::config::{Environment, WEBSOCKET_URL, WebSocketConfig};
+use opinion_hft::config::{Environment, WebSocketConfig, WEBSOCKET_URL};
 use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
 use opinion_hft::error::{Error, Result};
 use opinion_hft::telemetry::init_telemetry;
@@ -17,8 +17,7 @@ async fn main() -> Result<()> {
         field: "OPINION_API_KEY".into(),
     })?;
 
-    let ws_url = env::var("OPINION_WS_URL")
-        .unwrap_or_else(|_| WEBSOCKET_URL.to_string());
+    let ws_url = env::var("OPINION_WS_URL").unwrap_or_else(|_| WEBSOCKET_URL.to_string());
     let environment = env::var("OPINION_ENV")
         .ok()
         .and_then(|value| Environment::from_str(&value).ok())
@@ -100,21 +99,26 @@ fn log_event(event: WsEvent) {
         WsEvent::Disconnected { reason } => info!("WS disconnected: {}", reason),
         WsEvent::MarketData { pair, data } => info!("MarketData pair={} data={}", pair, data),
         WsEvent::MarketTrade { pair, data } => info!("MarketTrade pair={} data={}", pair, data),
-        WsEvent::OrderUpdate(update) => info!("OrderUpdate id={} status={}", update.order_id, update.status),
+        WsEvent::OrderUpdate(update) => info!(
+            "OrderUpdate id={} status={}",
+            update.order_id, update.status
+        ),
         WsEvent::TradeRecord(record) => info!("TradeRecord order_id={}", record.order_id),
-        WsEvent::MarketDepthDiff { market_id, outcome, outcome_side, side, price, size } => {
+        WsEvent::MarketDepthDiff {
+            market_id,
+            outcome,
+            outcome_side,
+            side,
+            price,
+            size,
+        } => {
             let outcome_label = outcome.unwrap_or_else(|| "unknown".to_string());
             let outcome_side_label = outcome_side
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string());
             info!(
                 "MarketDepthDiff market_id={} outcome={} outcome_side={} side={} price={} size={}",
-                market_id,
-                outcome_label,
-                outcome_side_label,
-                side,
-                price,
-                size
+                market_id, outcome_label, outcome_side_label, side, price, size
             );
         }
     }

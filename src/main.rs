@@ -1,27 +1,29 @@
 use opinion_hft::prelude::*;
 // use opinion_hft::config::ConfirmationMode;
-use opinion_hft::telemetry::init_telemetry;
-use opinion_hft::execution::gateway::OrderGateway;
-use opinion_hft::data::rest::OpinionClient;
-use opinion_hft::data::recorder::spawn_recorder;
+use alloy_primitives::Address;
 #[cfg(feature = "polars")]
-use opinion_hft::data::recorder::parquet::spawn_parquet_recorder;
-use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
-use opinion_hft::chain::client::ChainClient;
+use chrono::Utc;
 use opinion_hft::auth::Eip712Signer;
-use opinion_hft::execution::rate_limiter::RateLimiter;
+use opinion_hft::chain::client::ChainClient;
+#[cfg(feature = "polars")]
+use opinion_hft::data::recorder::parquet::{spawn_parquet_recorder, ScanStatsRow};
+use opinion_hft::data::recorder::spawn_recorder;
+use opinion_hft::data::rest::OpinionClient;
+use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
 use opinion_hft::execution::confirmation::ConfirmationTracker;
+use opinion_hft::execution::gateway::OrderGateway;
+use opinion_hft::execution::rate_limiter::RateLimiter;
 use opinion_hft::execution::risk_manager::RiskManager;
 use opinion_hft::strategy::arbitrage::{ArbitrageDetector, OutcomeOrderbook};
 use opinion_hft::strategy::market_scanner::MarketScanner;
 use opinion_hft::strategy::orderbook_store::LocalOrderbookStore;
-use tracing::{info, error, warn};
+use opinion_hft::telemetry::init_telemetry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use alloy_primitives::Address;
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 struct MarketTokenPairs {
@@ -45,17 +47,28 @@ async fn main() -> Result<()> {
     // 2. Load Configuration
     let config = Config::from_env()?;
 
-    info!("Configuration loaded for chain ID {}", config.chain.chain_id);
+    info!(
+        "Configuration loaded for chain ID {}",
+        config.chain.chain_id
+    );
     if config.execution.scan_only {
         info!("Scan-only mode enabled: order submission is disabled");
     }
 
     // 3. Initialize Clients
-    let maker_address: Address = config.chain.eoa_address.parse().map_err(|e| Error::ConfigError(format!("Invalid EOA: {}", e)))?;
+    let maker_address: Address = config
+        .chain
+        .eoa_address
+        .parse()
+        .map_err(|e| Error::ConfigError(format!("Invalid EOA: {}", e)))?;
 
     let chain_client = ChainClient::new(&config.chain, maker_address)?;
     let rest_client = OpinionClient::new(&config.api, config.environment)?;
-    let mut ws_client = WebSocketClient::new(&config.websocket, config.api.api_key.clone(), config.environment);
+    let mut ws_client = WebSocketClient::new(
+        &config.websocket,
+        config.api.api_key.clone(),
+        config.environment,
+    );
     let mut signer = Eip712Signer::from_secret(&config.chain.private_key)?;
 
     // Initialize OpinionClient (fetch and cache protected endpoint data once at startup)
@@ -69,22 +82,28 @@ async fn main() -> Result<()> {
     // Set the CTF Exchange address as verifyingContract for EIP-712 signatures
     // This is CRITICAL: the CTF Exchange address is different from ConditionalTokens address
     if let Some(exchange_address_str) = rest_client.get_cached_exchange_address().await {
-        let exchange_address: Address = exchange_address_str.parse()
+        let exchange_address: Address = exchange_address_str
+            .parse()
             .map_err(|e| Error::ConfigError(format!("Invalid exchange address: {}", e)))?;
         signer.set_verifying_contract(exchange_address);
-        info!("EIP-712 verifyingContract set to CTF Exchange: {}", exchange_address);
+        info!(
+            "EIP-712 verifyingContract set to CTF Exchange: {}",
+            exchange_address
+        );
     } else {
-        return Err(Error::ConfigError("CTF Exchange address not found after initialization".to_string()));
+        return Err(Error::ConfigError(
+            "CTF Exchange address not found after initialization".to_string(),
+        ));
     }
 
     // Get cached proxy address for Gnosis Safe support
     let proxy_address_opt = rest_client.get_cached_proxy_address().await;
     let proxy_address = if let Some(addr) = proxy_address_opt {
-        addr.parse::<Address>().map_err(|e| Error::ConfigError(format!("Invalid proxy address: {}", e)))?
+        addr.parse::<Address>()
+            .map_err(|e| Error::ConfigError(format!("Invalid proxy address: {}", e)))?
     } else {
         maker_address
     };
-
 
     // 4. Initialize WebSocket + Local Orderbook Store
     let orderbook_store = LocalOrderbookStore::new();
@@ -106,15 +125,26 @@ async fn main() -> Result<()> {
                         tracing::debug!("Ignored market data update for {}", pair);
                     }
                 }
-                WsEvent::MarketDepthDiff { market_id, outcome, outcome_side, side, price, size } => {
+                WsEvent::MarketDepthDiff {
+                    market_id,
+                    outcome,
+                    outcome_side,
+                    side,
+                    price,
+                    size,
+                } => {
                     let pairs = {
                         let guard = market_pairs_rx.read().await;
                         guard.get(&market_id).cloned()
                     };
                     if let Some(pairs) = pairs {
                         let mut target_pair = match outcome.as_deref() {
-                            Some(outcome) if outcome.eq_ignore_ascii_case("yes") => Some((&pairs.yes_pair, "YES")),
-                            Some(outcome) if outcome.eq_ignore_ascii_case("no") => Some((&pairs.no_pair, "NO")),
+                            Some(outcome) if outcome.eq_ignore_ascii_case("yes") => {
+                                Some((&pairs.yes_pair, "YES"))
+                            }
+                            Some(outcome) if outcome.eq_ignore_ascii_case("no") => {
+                                Some((&pairs.no_pair, "NO"))
+                            }
                             Some(outcome) => {
                                 tracing::debug!(
                                     "Unknown depth diff outcome for market_id={}: {}",
@@ -142,7 +172,8 @@ async fn main() -> Result<()> {
                         }
 
                         if let Some((pair, outcome_label)) = target_pair {
-                            if orderbook_store_rx.apply_depth_diff(pair, side.as_str(), price, size) {
+                            if orderbook_store_rx.apply_depth_diff(pair, side.as_str(), price, size)
+                            {
                                 tracing::info!(
                                     "Applied depth diff to {} book for market_id={}",
                                     outcome_label,
@@ -186,7 +217,11 @@ async fn main() -> Result<()> {
     };
     let recorder_handle_confirm = recorder_handle.clone();
     let confirmation_tracker = Arc::new(confirmation_tracker);
-    let risk_manager = Arc::new(Mutex::new(RiskManager::new(config.risk.clone(), config.environment, rest_client.clone())));
+    let risk_manager = Arc::new(Mutex::new(RiskManager::new(
+        config.risk.clone(),
+        config.environment,
+        rest_client.clone(),
+    )));
 
     // 6. Initialize Gateway
     let mut gateway = OrderGateway::new(
@@ -208,7 +243,7 @@ async fn main() -> Result<()> {
     let scanner_rate_limiter = rate_limiter.clone();
     let orderbook_store_scan = orderbook_store.clone();
     let market_pairs_scan = market_pairs.clone();
-    
+
     let recorder_handle_scanner = recorder_handle.clone();
     #[cfg(feature = "polars")]
     let parquet_handle_scanner = parquet_handle.clone();
@@ -235,6 +270,8 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             let scan_start = Instant::now();
+            #[cfg(feature = "polars")]
+            let scan_ts_us = Utc::now().timestamp_micros();
             let mut markets_scanned = 0usize;
             let mut orderbook_errors = 0usize;
             let mut orderbook_missing = 0usize;
@@ -382,8 +419,14 @@ async fn main() -> Result<()> {
             }
 
             for market_id in subscribed_market_ids.difference(&desired_market_ids) {
-                if let Err(e) = ws_client_for_scanner.unsubscribe_depth_diff(*market_id).await {
-                    warn!("Failed to unsubscribe market.depth.diff {}: {}", market_id, e);
+                if let Err(e) = ws_client_for_scanner
+                    .unsubscribe_depth_diff(*market_id)
+                    .await
+                {
+                    warn!(
+                        "Failed to unsubscribe market.depth.diff {}: {}",
+                        market_id, e
+                    );
                 }
             }
             subscribed_market_ids = desired_market_ids.clone();
@@ -407,7 +450,10 @@ async fn main() -> Result<()> {
                         ob
                     } else {
                         scanner_rate_limiter.acquire().await;
-                        match scanner.fetch_orderbook(&outcome.token_id, &outcome.pair).await {
+                        match scanner
+                            .fetch_orderbook(&outcome.token_id, &outcome.pair)
+                            .await
+                        {
                             Ok((ob, raw)) => {
                                 if let Some(recorder) = &recorder_handle_scanner {
                                     recorder
@@ -452,7 +498,9 @@ async fn main() -> Result<()> {
 
                 markets_scanned += 1;
                 let detected_at = now_unix_seconds();
-                if let Some(opp) = detector.detect_neg_risk_arbitrage(&scan.market_id, &outcomes, detected_at) {
+                if let Some(opp) =
+                    detector.detect_neg_risk_arbitrage(&scan.market_id, &outcomes, detected_at)
+                {
                     neg_risk_found += 1;
                     info!("📊 NEG-RISK FOUND: {}", opp.summary());
                     if let Err(e) = strategy_tx.send(opp).await {
@@ -477,7 +525,10 @@ async fn main() -> Result<()> {
                     ob
                 } else {
                     scanner_rate_limiter.acquire().await;
-                    match scanner.fetch_orderbook(&market.yes_token_id, &market.yes_pair).await {
+                    match scanner
+                        .fetch_orderbook(&market.yes_token_id, &market.yes_pair)
+                        .await
+                    {
                         Ok((ob, raw)) => {
                             if let Some(recorder) = &recorder_handle_scanner {
                                 recorder
@@ -486,14 +537,22 @@ async fn main() -> Result<()> {
                             }
                             #[cfg(feature = "polars")]
                             if let Some(recorder) = &parquet_handle_scanner {
-                                recorder.record_orderbook(&market.id, &market.yes_pair, "YES", &raw);
+                                recorder.record_orderbook(
+                                    &market.id,
+                                    &market.yes_pair,
+                                    "YES",
+                                    &raw,
+                                );
                             }
                             orderbook_store_scan.upsert(&market.yes_pair, ob.clone());
                             orderbook_rest_refresh += 1;
                             ob
                         }
                         Err(e) => {
-                            warn!("REST orderbook refresh failed for {}: {}", market.yes_pair, e);
+                            warn!(
+                                "REST orderbook refresh failed for {}: {}",
+                                market.yes_pair, e
+                            );
                             orderbook_errors += 1;
                             continue;
                         }
@@ -514,7 +573,10 @@ async fn main() -> Result<()> {
                     ob
                 } else {
                     scanner_rate_limiter.acquire().await;
-                    match scanner.fetch_orderbook(&market.no_token_id, &market.no_pair).await {
+                    match scanner
+                        .fetch_orderbook(&market.no_token_id, &market.no_pair)
+                        .await
+                    {
                         Ok((ob, raw)) => {
                             if let Some(recorder) = &recorder_handle_scanner {
                                 recorder
@@ -530,7 +592,10 @@ async fn main() -> Result<()> {
                             ob
                         }
                         Err(e) => {
-                            warn!("REST orderbook refresh failed for {}: {}", market.no_pair, e);
+                            warn!(
+                                "REST orderbook refresh failed for {}: {}",
+                                market.no_pair, e
+                            );
                             orderbook_errors += 1;
                             continue;
                         }
@@ -551,7 +616,7 @@ async fn main() -> Result<()> {
                 ) {
                     yesno_found += 1;
                     info!("🚀 ARBITRAGE FOUND: {}", opp.summary());
-                    
+
                     if let Err(e) = strategy_tx.send(opp).await {
                         error!("Failed to send opportunity to gateway: {}", e);
                     }
@@ -574,7 +639,10 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let duration_ms = scan_start.elapsed().as_millis();
+            let duration = scan_start.elapsed();
+            let duration_ms = duration.as_millis();
+            #[cfg(feature = "polars")]
+            let duration_us = duration.as_micros() as u64;
             let stats = detector.drain_stats();
             info!(
                 "Scan summary: total_markets={}, liquid={}, scanned={}, binary={}, categorical={}, skipped_missing_tokens={}, orderbook_errors={}, orderbook_missing={}, orderbook_stale={}, orderbook_rest_refresh={}, yesno_found={}, mint_sell_found={}, neg_risk_found={}, duration_ms={}",
@@ -594,6 +662,35 @@ async fn main() -> Result<()> {
                 duration_ms
             );
             info!("Arb decision stats: {}", stats.summary());
+            #[cfg(feature = "polars")]
+            if let Some(recorder) = &parquet_handle_scanner {
+                recorder.record_scan_stats(ScanStatsRow {
+                    scan_ts_us,
+                    duration_us,
+                    markets_scanned: markets_scanned as u64,
+                    yesno_checked: stats.yesno_checked,
+                    yesno_found: stats.yesno_found,
+                    yesno_missing_ask: stats.yesno_missing_ask,
+                    yesno_cost_ge_one: stats.yesno_cost_ge_one,
+                    yesno_low_liquidity: stats.yesno_low_liquidity,
+                    yesno_below_min_notional: stats.yesno_below_min_notional,
+                    yesno_below_min_profit: stats.yesno_below_min_profit,
+                    mint_sell_checked: stats.mint_sell_checked,
+                    mint_sell_found: stats.mint_sell_found,
+                    mint_sell_missing_bid: stats.mint_sell_missing_bid,
+                    mint_sell_revenue_le_one: stats.mint_sell_revenue_le_one,
+                    mint_sell_low_liquidity: stats.mint_sell_low_liquidity,
+                    mint_sell_below_min_notional: stats.mint_sell_below_min_notional,
+                    mint_sell_below_min_profit: stats.mint_sell_below_min_profit,
+                    neg_risk_checked: stats.neg_risk_checked,
+                    neg_risk_found: stats.neg_risk_found,
+                    neg_risk_missing_ask: stats.neg_risk_missing_ask,
+                    neg_risk_cost_ge_one: stats.neg_risk_cost_ge_one,
+                    neg_risk_low_liquidity: stats.neg_risk_low_liquidity,
+                    neg_risk_below_min_notional: stats.neg_risk_below_min_notional,
+                    neg_risk_below_min_profit: stats.neg_risk_below_min_profit,
+                });
+            }
         }
     });
 

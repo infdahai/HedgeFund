@@ -1,6 +1,6 @@
+use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-use rand::seq::SliceRandom;
 
 use crate::data::rest::OpinionClient;
 use crate::error::Result;
@@ -65,7 +65,8 @@ impl MarketScanner {
 
         self.log_market_diagnostics(&api_markets);
 
-        let markets: Vec<MarketInfo> = api_markets.into_iter()
+        let markets: Vec<MarketInfo> = api_markets
+            .into_iter()
             .map(|m| self.convert_market(m))
             .collect();
 
@@ -78,12 +79,16 @@ impl MarketScanner {
         Ok(markets)
     }
 
-    async fn fetch_markets_paginated(&self, status: Option<&str>) -> Result<Vec<crate::data::rest::models::ApiMarket>> {
+    async fn fetch_markets_paginated(
+        &self,
+        status: Option<&str>,
+    ) -> Result<Vec<crate::data::rest::models::ApiMarket>> {
         let mut page = 1;
         let mut markets = Vec::new();
 
         loop {
-            let api_markets = self.rest_client
+            let api_markets = self
+                .rest_client
                 .get_markets_with_filters(
                     status,
                     Some(self.page_size),
@@ -127,7 +132,11 @@ impl MarketScanner {
                 let id = topic_id.to_string();
                 let yes_pair = format!("{}-YES", id);
                 let no_pair = format!("{}-NO", id);
-                let status_enum = parent.status_enum.clone().unwrap_or_default().to_lowercase();
+                let status_enum = parent
+                    .status_enum
+                    .clone()
+                    .unwrap_or_default()
+                    .to_lowercase();
                 let is_active = if status_enum.is_empty() {
                     parent.status.unwrap_or_default() == 2
                 } else {
@@ -334,7 +343,7 @@ impl MarketScanner {
 
     fn convert_market(&self, m: crate::data::rest::models::ApiMarket) -> MarketInfo {
         let id = m.market_id.to_string();
-        
+
         let status_enum = m.status_enum.to_lowercase();
         let is_active = if status_enum.is_empty() {
             m.status == 2
@@ -345,9 +354,8 @@ impl MarketScanner {
         let yes_pair = format!("{}-YES", id);
         let no_pair = format!("{}-NO", id);
 
-        let parse_volume = |value: &Option<String>| -> Option<f64> {
-            value.as_ref().and_then(|v| v.parse().ok())
-        };
+        let parse_volume =
+            |value: &Option<String>| -> Option<f64> { value.as_ref().and_then(|v| v.parse().ok()) };
         let volume_24h = parse_volume(&m.volume24h)
             .or_else(|| parse_volume(&m.volume))
             .unwrap_or(0.0);
@@ -369,7 +377,7 @@ impl MarketScanner {
     }
 
     // Deprecated: Internal JSON parsing methods removed in favor of typed client
-    
+
     pub fn get_random_markets(&self, count: usize) -> Vec<&MarketInfo> {
         let mut rng = rand::thread_rng();
         let mut markets: Vec<&MarketInfo> = self.markets_cache.values().collect();
@@ -402,17 +410,23 @@ impl MarketScanner {
         self.rest_client.get_categorical_market(market_id).await
     }
 
-    fn convert_orderbook(&self, pair: &str, ob: crate::data::rest::models::TokenOrderbook) -> MarketOrderbook {
-        let convert_side = |entries: Vec<crate::data::rest::models::OrderbookEntry>| -> Vec<OrderbookSide> {
-            entries.into_iter()
-                .filter_map(|e| {
-                    Some(OrderbookSide {
-                        price: e.price.parse().ok()?,
-                        size: e.size.parse().ok()?,
+    fn convert_orderbook(
+        &self,
+        pair: &str,
+        ob: crate::data::rest::models::TokenOrderbook,
+    ) -> MarketOrderbook {
+        let convert_side =
+            |entries: Vec<crate::data::rest::models::OrderbookEntry>| -> Vec<OrderbookSide> {
+                entries
+                    .into_iter()
+                    .filter_map(|e| {
+                        Some(OrderbookSide {
+                            price: e.price.parse().ok()?,
+                            size: e.size.parse().ok()?,
+                        })
                     })
-                })
-                .collect()
-        };
+                    .collect()
+            };
 
         MarketOrderbook {
             pair: pair.to_string(),
@@ -439,12 +453,24 @@ mod tests {
         let ob = MarketOrderbook {
             pair: "TEST-YES".into(),
             bids: vec![
-                OrderbookSide { price: 0.45, size: 100.0 },
-                OrderbookSide { price: 0.44, size: 200.0 },
+                OrderbookSide {
+                    price: 0.45,
+                    size: 100.0,
+                },
+                OrderbookSide {
+                    price: 0.44,
+                    size: 200.0,
+                },
             ],
             asks: vec![
-                OrderbookSide { price: 0.47, size: 150.0 },
-                OrderbookSide { price: 0.48, size: 250.0 },
+                OrderbookSide {
+                    price: 0.47,
+                    size: 150.0,
+                },
+                OrderbookSide {
+                    price: 0.48,
+                    size: 250.0,
+                },
             ],
         };
 

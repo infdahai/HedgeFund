@@ -13,7 +13,7 @@ fn test_environment_parsing() {
 
 #[test]
 fn test_environment_defaults() {
-    assert_eq!(Environment::default(), Environment::Local);
+    assert_eq!(Environment::default(), Environment::Aws);
     assert!(!Environment::Aws.is_local());
     assert!(Environment::Local.is_local());
 }

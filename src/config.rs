@@ -119,6 +119,7 @@ pub struct ParquetConfig {
     pub dir: String,
     pub batch_size: usize,
     pub flush_interval_ms: u64,
+    pub rotate_size_mb: u64,
     pub queue_capacity: usize,
     pub compression: String,
     pub heartbeat_interval_secs: u64,
@@ -197,7 +198,7 @@ impl ParquetConfig {
         let dir = std::env::var("OPINION_PARQUET_DIR")
             .ok()
             .filter(|p| !p.trim().is_empty())
-            .unwrap_or_else(|| "data/parquet/orderbook_snapshots_v1".to_string());
+            .unwrap_or_else(|| "data/parquet".to_string());
 
         let batch_size = std::env::var("OPINION_PARQUET_BATCH_SIZE")
             .ok()
@@ -208,6 +209,11 @@ impl ParquetConfig {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1000);
+
+        let rotate_size_mb = std::env::var("OPINION_PARQUET_ROTATE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(100);
 
         let queue_capacity = std::env::var("OPINION_PARQUET_QUEUE_CAP")
             .ok()
@@ -229,6 +235,7 @@ impl ParquetConfig {
             dir,
             batch_size,
             flush_interval_ms,
+            rotate_size_mb,
             queue_capacity,
             compression,
             heartbeat_interval_secs,
@@ -240,9 +247,10 @@ impl Default for ParquetConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            dir: "data/parquet/orderbook_snapshots_v1".to_string(),
+            dir: "data/parquet".to_string(),
             batch_size: 1000,
             flush_interval_ms: 1000,
+            rotate_size_mb: 100,
             queue_capacity: 4096,
             compression: "zstd".to_string(),
             heartbeat_interval_secs: 60,
@@ -733,7 +741,7 @@ impl ConfigBuilder {
 }
 
 fn parse_bool_env(value: Option<String>) -> bool {
-    value.map_or(false, |raw| {
+    value.is_some_and(|raw| {
         matches!(
             raw.trim().to_lowercase().as_str(),
             "1" | "true" | "yes" | "y" | "on"

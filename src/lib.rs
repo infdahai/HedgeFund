@@ -54,7 +54,8 @@ pub mod test_harness {
     use crate::types::market::{Orderbook, OrderbookLevel};
     use crate::types::order::{Order, OrderIntent, OrderSide, SignatureType};
     use alloy_primitives::{Address, U256};
-    use serde::{Deserialize, Serialize};
+    use serde::de::{Error as DeError, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize};
     use std::collections::HashMap;
     use std::future::Future;
     use std::pin::Pin;
@@ -471,7 +472,8 @@ pub mod test_harness {
             market_id: String,
             side: String,
             price: f64,
-            quantity: u64,
+            #[serde(deserialize_with = "deserialize_u128")]
+            quantity: u128,
             fee: f64,
         },
     }
@@ -480,7 +482,7 @@ pub mod test_harness {
     pub struct ReplayTrade {
         pub trade_id: String,
         pub price: f64,
-        pub quantity: u64,
+        pub quantity: u128,
         pub fee: f64,
         pub side: OrderSide,
     }
@@ -589,6 +591,74 @@ pub mod test_harness {
             };
             (total_pnl, max_drawdown, win_rate, count)
         }
+    }
+
+    fn deserialize_u128<'de, D>(deserializer: D) -> std::result::Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct U128Visitor;
+
+        impl<'de> Visitor<'de> for U128Visitor {
+            type Value = u128;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a non-negative integer as number or string")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(value as u128)
+            }
+
+            fn visit_u128<E>(self, value: u128) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(value)
+            }
+
+            fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if value < 0 {
+                    return Err(E::custom("negative value not allowed"));
+                }
+                Ok(value as u128)
+            }
+
+            fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if !value.is_finite() || value < 0.0 {
+                    return Err(E::custom("invalid floating point value"));
+                }
+                Ok(value.round() as u128)
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                value
+                    .trim()
+                    .parse::<u128>()
+                    .map_err(|_| E::custom("invalid u128 string"))
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(U128Visitor)
     }
 
     impl TestClient for ReplayTestClient {

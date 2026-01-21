@@ -100,13 +100,13 @@ pub struct ArbitrageConfig {
 impl Default for ArbitrageConfig {
     fn default() -> Self {
         Self {
-            min_profit_rate: 0.005, // 0.5% minimum profit
-            min_liquidity: 100.0,   // Minimum 100 units
+            min_profit_rate: 0.005,   // 0.5% minimum profit
+            min_liquidity: 100.0,     // Minimum 100 units
             min_order_notional: 1.30, // API minimum order notional
-            min_fee: 0.50,          // API minimum fee per order
-            topic_fee_rate: 0.02,   // 2% max fee base
-            referral_discount: 0.10, // 10% rebate
-            max_slippage: 0.01,     // 1% max slippage
+            min_fee: 0.50,            // API minimum fee per order
+            topic_fee_rate: 0.02,     // 2% max fee base
+            referral_discount: 0.10,  // 10% rebate
+            max_slippage: 0.01,       // 1% max slippage
         }
     }
 }
