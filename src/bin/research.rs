@@ -284,9 +284,14 @@ mod research_app {
     fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
         let mut frames = Vec::new();
         let mut skipped = 0usize;
+        let mut not_ready = 0usize;
 
         for entry in glob(&config.input).context("invalid glob pattern")? {
             let path = entry.context("invalid glob entry")?;
+            if !partition_ready(&path) {
+                not_ready += 1;
+                continue;
+            }
             let mut lf = match LazyFrame::scan_parquet(&path, Default::default()) {
                 Ok(frame) => frame,
                 Err(err) => {
@@ -304,13 +309,17 @@ mod research_app {
 
         if frames.is_empty() {
             return Err(anyhow!(
-                "no valid parquet files found (skipped={})",
-                skipped
+                "no valid parquet files found (skipped={}, not_ready={})",
+                skipped,
+                not_ready
             ));
         }
 
         if skipped > 0 {
             warn!("parquet files skipped", skipped = skipped);
+        }
+        if not_ready > 0 {
+            warn!("parquet partitions not ready", skipped = not_ready);
         }
 
         let df = concat(frames, UnionArgs::default())?
@@ -432,6 +441,14 @@ mod research_app {
         }
 
         Ok(rows)
+    }
+
+    fn partition_ready(path: &Path) -> bool {
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        let success = parent.join("_SUCCESS");
+        success.exists()
     }
 
     fn build_market_ticks(rows: Vec<SnapshotRow>) -> HashMap<String, Vec<MarketTick>> {

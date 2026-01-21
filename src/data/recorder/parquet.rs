@@ -2,6 +2,7 @@ use chrono::{DateTime, Timelike, Utc};
 use polars::io::parquet::write::BatchedWriter;
 use polars::prelude::*;
 use polars_parquet::parquet::metadata::KeyValue;
+use polars_parquet::read::read_metadata;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::File;
@@ -296,6 +297,7 @@ struct ParquetMetadata {
 struct DatasetWriter {
     current_dir: Option<String>,
     current_path: Option<String>,
+    current_temp_path: Option<String>,
     current_schema_hash: Option<String>,
     current_size_bytes: u64,
     writer: Option<BatchedWriter<File>>,
@@ -306,6 +308,7 @@ impl DatasetWriter {
         Self {
             current_dir: None,
             current_path: None,
+            current_temp_path: None,
             current_schema_hash: None,
             current_size_bytes: 0,
             writer: None,
@@ -320,13 +323,15 @@ impl DatasetWriter {
         df: &DataFrame,
     ) -> PolarsResult<()> {
         let filename = format!("{}/part-{:06}.parquet", dir_path, part);
-        let file = File::create(&filename)?;
+        let temp_filename = format!("{}.tmp", filename);
+        let file = File::create(&temp_filename)?;
         let writer = ParquetWriter::new(file)
             .with_compression(compression)
             .batched(&df.schema())?;
 
         self.current_dir = Some(dir_path.to_string());
         self.current_path = Some(filename);
+        self.current_temp_path = Some(temp_filename);
         self.current_schema_hash = Some(schema_fingerprint(df));
         self.current_size_bytes = 0;
         self.writer = Some(writer);
@@ -341,7 +346,7 @@ impl DatasetWriter {
     }
 
     fn refresh_size(&mut self) {
-        let Some(path) = &self.current_path else {
+        let Some(path) = &self.current_temp_path else {
             return;
         };
         if let Ok(metadata) = std::fs::metadata(path) {
@@ -349,10 +354,11 @@ impl DatasetWriter {
         }
     }
 
-    fn finish(&mut self, metadata: &ParquetMetadata) -> PolarsResult<()> {
+    fn finish(&mut self, metadata: &ParquetMetadata, mark_success: bool) -> PolarsResult<()> {
         let Some(writer) = self.writer.take() else {
             self.current_dir = None;
             self.current_path = None;
+            self.current_temp_path = None;
             self.current_schema_hash = None;
             self.current_size_bytes = 0;
             return Ok(());
@@ -372,8 +378,29 @@ impl DatasetWriter {
                 .map_err(|err| PolarsError::ComputeError(err.to_string().into()))?
         };
 
+        let temp_path = self
+            .current_temp_path
+            .clone()
+            .unwrap_or_else(|| "".to_string());
+        let final_path = self.current_path.clone().unwrap_or_else(|| "".to_string());
+        if !temp_path.is_empty() && !final_path.is_empty() {
+            validate_parquet_footer(&temp_path)?;
+            let target = Path::new(&final_path);
+            if target.exists() {
+                return Err(PolarsError::ComputeError(
+                    format!("parquet target already exists: {}", final_path).into(),
+                ));
+            }
+            std::fs::rename(&temp_path, &final_path)?;
+            if mark_success {
+                let success_path = format!("{}/_SUCCESS", self.current_dir.as_deref().unwrap());
+                let _ = File::create(success_path);
+            }
+        }
+
         self.current_dir = None;
         self.current_path = None;
+        self.current_temp_path = None;
         self.current_schema_hash = None;
         self.current_size_bytes = size;
         Ok(())
@@ -426,8 +453,8 @@ impl ParquetRecorder {
 
     pub fn shutdown(&mut self) -> PolarsResult<()> {
         self.flush()?;
-        self.orderbook_writer.finish(&self.metadata)?;
-        self.scan_stats_writer.finish(&self.metadata)?;
+        self.orderbook_writer.finish(&self.metadata, true)?;
+        self.scan_stats_writer.finish(&self.metadata, true)?;
         Ok(())
     }
 
@@ -496,7 +523,11 @@ fn write_dataframe(
     metadata: &ParquetMetadata,
 ) -> PolarsResult<()> {
     if dataset.writer.is_none() || dataset.current_dir.as_deref() != Some(dir_path) {
-        dataset.finish(metadata)?;
+        let mark_success = dataset
+            .current_dir
+            .as_deref()
+            .is_some_and(|dir| dir != dir_path);
+        dataset.finish(metadata, mark_success)?;
         let part = next_part(part_counters, dir_path);
         dataset.open_writer(dir_path, part, compression, df)?;
     }
@@ -505,7 +536,7 @@ fn write_dataframe(
     dataset.refresh_size();
 
     if rotate_size_bytes > 0 && dataset.current_size_bytes >= rotate_size_bytes {
-        dataset.finish(metadata)?;
+        dataset.finish(metadata, false)?;
     }
 
     Ok(())
@@ -608,6 +639,13 @@ fn parse_part_number(file_name: &str) -> Option<u64> {
     let suffix = file_name.strip_prefix("part-")?;
     let suffix = suffix.strip_suffix(".parquet")?;
     suffix.parse::<u64>().ok()
+}
+
+fn validate_parquet_footer(path: &str) -> PolarsResult<()> {
+    let mut file = File::open(path)?;
+    read_metadata(&mut file)
+        .map(|_| ())
+        .map_err(|err| PolarsError::ComputeError(err.to_string().into()))
 }
 
 fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> {

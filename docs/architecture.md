@@ -1704,6 +1704,33 @@ SQLite schema (current)
 `orderbook_levels` (snapshot_id, side, price, size, level)
 `confirmed_orders` (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
 
+**Block Reorganization (Reorg) Handling** [Expert Recommendation]
+
+BNB Chain occasionally experiences block reorganizations where confirmed transactions may be reverted. This creates data consistency risks.
+
+**Problem**: If `confirmed_orders` records a fill, but the block is later reorged, the SQLite data becomes inconsistent with on-chain state.
+
+**Mitigation Strategy**:
+
+1. **Schema Enhancement**: Add `block_number` and `tx_hash` to `confirmed_orders`:
+   ```sql
+   ALTER TABLE confirmed_orders ADD COLUMN block_number INTEGER;
+   ALTER TABLE confirmed_orders ADD COLUMN tx_hash TEXT;
+   ALTER TABLE confirmed_orders ADD COLUMN reorg_checked BOOLEAN DEFAULT FALSE;
+   ```
+
+2. **Periodic Validation** (P2 priority, post-MVP):
+   - Background task checks recent `confirmed_orders` (last 100 blocks) against on-chain state
+   - Query `balanceOf()` for each token and compare with recorded positions
+   - Flag mismatches with `reorg_detected` timestamp
+   - Alert on any discrepancy
+
+3. **Safe Confirmation Depth**:
+   - BNB Chain: Wait for 15+ block confirmations before considering final
+   - Current 3-5s delay (~10-15 blocks) is marginal; consider increasing for high-value trades
+
+**Implementation Priority**: P2 (after core strategy iteration works). Reorgs are rare on BNB Chain, but the schema fields should be added now for future-proofing.
+
 Daily rotation
 
 New file naming: `{base}-{YYYY-MM-DD}.sqlite` (base comes from `OPINION_DATA_DB_PATH`)
@@ -1767,6 +1794,159 @@ Priority order (current):
 
 Rationale: without structured data, strategy work is guesswork. Capture data first, then analyze, then iterate.
 Strategic note: external limits (API TPS, chain confirmation) dominate latency. Avoid low-ROI micro-optimizations (e.g., swapping JSON libs) until data capture and analysis are in place.
+
+### 11.2.0 Next Steps: Implementation Order (CRITICAL)
+
+This section defines the **exact execution order** for remaining work. Follow this sequence to maximize value and minimize risk.
+
+#### Current Implementation Status
+
+| Component | Design | Code | Tests | Status |
+|-----------|--------|------|-------|--------|
+| **Stage A: Parquet Recorder** | ✅ | 90% | ✅ | `scan_stats` missing |
+| **Stage C: Research CLI** | ✅ | 80% | ✅ | Gas/fill modeling missing |
+| **P2: Strategy Iteration** | ✅ | 0% | - | All pending |
+| **Section 12: CI/CD** | ✅ | 0% | - | Workflow files missing |
+| Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
+| Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
+
+#### Execution Order (Step-by-Step)
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     IMPLEMENTATION SEQUENCE                                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Step 1: CI/CD (Safety Net)                          ◀── START HERE             │
+│  ├─ Create .github/workflows/quick-check.yml                                    │
+│  ├─ Effort: 15 min                                                              │
+│  └─ Value: Prevents regression during subsequent changes                        │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 2: Gas Cost Modeling                                                       │
+│  ├─ Add --gas-cost-usd to research.rs                                           │
+│  ├─ Effort: 30 min                                                              │
+│  └─ Value: Filters 50%+ of unrealistic "opportunities"                          │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 3: Fill Probability Heuristic                                             │
+│  ├─ Add 0.8× liquidity filter to SimState                                       │
+│  ├─ Effort: 30 min                                                              │
+│  └─ Value: Prevents "sniping entire orderbook" in backtest                      │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 4: scan_stats Recorder                                                     │
+│  ├─ Complete Stage A Parquet integration                                        │
+│  ├─ Effort: 2-3 hours                                                           │
+│  └─ Value: Required for microstructure analysis                                 │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 5: --mode microstructure                                                   │
+│  ├─ Analyze spread/liquidity/opportunity distributions                          │
+│  ├─ Effort: 2-3 hours                                                           │
+│  └─ Value: Understand market before tuning parameters                           │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 6: --mode sweep                                                            │
+│  ├─ Grid search over min_profit_rate, min_liquidity                             │
+│  ├─ Effort: 3-4 hours                                                           │
+│  └─ Value: Find optimal parameters for production                               │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 7: Capital Turnover Metric                                                 │
+│  ├─ Track PnL / avg_locked_capital                                              │
+│  ├─ Effort: 1 hour                                                              │
+│  └─ Value: Optimize for capital efficiency                                      │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 8: Train/Test Validation                                                   │
+│  ├─ 70/30 time split, gap analysis                                              │
+│  ├─ Effort: 2 hours                                                             │
+│  └─ Value: Prevent overfitting                                                  │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Step 9: JSON Config Export                                                      │
+│  ├─ Output recommended_config.json                                              │
+│  ├─ Effort: 1 hour                                                              │
+│  └─ Value: Production-ready parameters                                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Detailed Task Breakdown
+
+| Step | Task | File(s) | Priority | Effort | Depends On |
+|------|------|---------|----------|--------|------------|
+| 1 | CI quick-check workflow | `.github/workflows/quick-check.yml` | **P0** | 15 min | None |
+| 2 | `--gas-cost-usd` CLI param | `src/bin/research.rs` | **P0** | 30 min | Step 1 |
+| 3 | Fill probability filter | `src/bin/research.rs` | **P0** | 30 min | Step 2 |
+| 3.5 | Resolution lock modeling | `src/bin/research.rs`, market metadata | **P0** | 1-2 hr | Step 3 |
+| 4 | `scan_stats` Parquet writer | `src/data/recorder/parquet.rs` | **P1** | 2-3 hr | Step 3.5 |
+| 5 | `--mode microstructure` | `src/bin/research.rs` | **P1** | 2-3 hr | Step 4 |
+| 6 | `--mode sweep` grid search | `src/bin/research.rs` | **P1** | 3-4 hr | Step 5 |
+| 7 | Capital turnover metric | `src/bin/research.rs` | **P2** | 1 hr | Step 3.5 |
+| 8 | Train/test validation | `src/bin/research.rs` | **P2** | 2 hr | Step 6 |
+| 9 | JSON config output | `src/bin/research.rs` | **P2** | 1 hr | Step 8 |
+| 10 | Reorg detection (SQLite schema) | `src/data/recorder/mod.rs` | **P2** | 1 hr | None |
+
+**Total Effort Estimate**: 14-18 hours (2-3 focused days)
+
+#### Rationale for This Order
+
+1. **CI First (Step 1)**:
+   - Low effort, high value
+   - Catches regressions immediately as you modify `research.rs`
+   - Prevents "it worked yesterday" debugging sessions
+
+2. **Gas + Fill Before Features (Steps 2-3)**:
+   - These are **filters**, not features
+   - Without them, all subsequent analysis produces inflated/unrealistic numbers
+   - Fix the foundation before building on it
+
+3. **scan_stats Before Modes (Step 4)**:
+   - `--mode microstructure` needs skip-reason data
+   - Can't diagnose "why no opportunities" without this dataset
+   - Enables data-driven parameter selection
+
+4. **Microstructure Before Sweep (Step 5)**:
+   - Understand market characteristics before tuning
+   - Prevents blind grid search over irrelevant parameter ranges
+   - May reveal that certain markets are never profitable
+
+5. **Sweep Before Validation (Step 6)**:
+   - Need candidate parameters before validating them
+   - Sweep produces the configs that validation will test
+
+6. **Metrics + Export Last (Steps 7-9)**:
+   - Nice-to-have, not blocking
+   - Core iteration loop works without capital turnover
+   - JSON export is cosmetic (can copy values manually)
+
+#### Definition of Done (Per Step)
+
+| Step | Acceptance Criteria |
+|------|---------------------|
+| 1 | `cargo fmt --check && cargo clippy && cargo test --lib` passes in GitHub Actions |
+| 2 | Running with `--gas-cost-usd 0.60` filters out small-profit trades |
+| 3 | Trades with `liquidity * 0.8 < order_size` are skipped |
+| 3.5 | Trades with `annual_roi < 20%` (based on lock duration) are skipped |
+| 4 | `scan_stats_v1/*.parquet` files written with skip-reason counts |
+| 5 | `reports/microstructure.csv` contains spread/liquidity/frequency metrics |
+| 6 | `reports/param_sweep.csv` contains PnL for each parameter combination |
+| 7 | Summary output shows `capital_efficiency` metric |
+| 8 | Validation report shows train/test gap percentage |
+| 9 | `reports/recommended_config.json` written with best parameters |
+| 10 | `confirmed_orders` table includes `block_number` and `tx_hash` columns |
+
+#### Non-Goals (Explicitly Deferred)
+
+| Task | Why Deferred | When to Revisit |
+|------|--------------|-----------------|
+| Stage B (S3 Pipeline) | Not blocking research iteration | After 1 week of Parquet data collected |
+| Stage D (Optimistic Execution) | Risky without stable strategy | After strategy validated |
+| Stage E (Feature Layer) | Premature optimization | After winning strategy proven |
+| ML-based fill probability | Insufficient data | After 10K+ trades logged |
+| Real-time parameter updates | Safety concern | Never (human review required) |
 
 ### Stage A: Local Structured Recorder (Parquet sidecar)
 
@@ -1850,6 +2030,13 @@ Rotation policy:
 - File name uses `part-000.parquet` with a monotonically increasing part index per partition.
 - On startup, scan the partition directory to resume the next part index and prevent overwrites.
 - Store `schema_version`, `git_commit`, `config_hash` as Parquet file metadata.
+
+Atomicity + integrity (best practice):
+- Never write directly to `*.parquet`. Write to `*.parquet.tmp` first.
+- After `flush` + footer write completes, validate Parquet metadata (footer read).
+- Use a filesystem rename (atomic) to move `.tmp` -> `.parquet`.
+- When a partition (hour) is closed, write an empty `_SUCCESS` file in the partition directory.
+- Readers should only consume partitions that contain `_SUCCESS`.
 
 Sampling policy:
 - Always record REST refresh snapshots (high quality).
@@ -2626,7 +2813,107 @@ let capital_efficiency = pnl / avg_locked;
 println!("  capital_efficiency: {:.4}", capital_efficiency);
 ```
 
-#### 7. Dependency: scan_stats Dataset
+**D. Resolution Lock Modeling (Prediction Market Specific)** [Expert Recommendation]
+
+Unlike perpetual futures or spot trading, prediction market arbitrage **locks capital until event resolution**. This fundamentally changes profitability calculations.
+
+**Problem**: A 0.5% profit that locks capital for 30 days has terrible annualized return:
+```
+Annual ROI = 0.5% × (365 / 30) = 6.08%
+vs.
+Annual ROI = 0.5% × (365 / 1) = 182.5% (if capital released daily)
+```
+
+**Key Insight**: Capital turnover is more important than per-trade profit rate in prediction markets.
+
+**SimState Enhancement**:
+```rust
+struct SimState {
+    // Existing fields...
+    
+    // Resolution Lock Tracking
+    locked_positions: HashMap<String, LockedPosition>,  // market_id -> position
+}
+
+struct LockedPosition {
+    market_id: String,
+    entry_ts_us: i64,
+    resolution_ts_us: i64,       // Expected market resolution time
+    capital_locked: f64,
+    expected_profit: f64,
+}
+```
+
+**Resolution-Aware Metrics**:
+```rust
+// Annualized ROI per trade
+fn annualized_roi(profit_rate: f64, lock_days: f64) -> f64 {
+    profit_rate * (365.0 / lock_days)
+}
+
+// In opportunity filtering:
+let lock_days = (market.resolution_ts - now) / SECS_PER_DAY;
+let annual_roi = annualized_roi(opportunity.net_profit_rate, lock_days);
+
+// Minimum annualized threshold (e.g., 20% = better than risk-free)
+const MIN_ANNUAL_ROI: f64 = 0.20;
+
+if annual_roi < MIN_ANNUAL_ROI {
+    debug!("skipped: annual_roi={:.2}% < {:.0}%", annual_roi * 100.0, MIN_ANNUAL_ROI * 100.0);
+    continue;
+}
+```
+
+**Integration with Market Data**:
+- Fetch `resolution_ts` (settlement date) from market metadata
+- Store in `MarketInfo` struct alongside `yes_pair`, `no_pair`
+- Use in sweep analysis: plot `profit_rate × volume` vs `lock_duration`
+
+**Parameter Sweep Addition**:
+| Parameter | Range | Rationale |
+|-----------|-------|-----------|
+| `max_lock_days` | 7, 14, 30, 60 | Trade-off: more opportunities vs lower capital velocity |
+| `min_annual_roi` | 0.10, 0.20, 0.50 | Filter low-yield long-lock trades |
+
+**Why This Matters**:
+- A bot that only trades 7-day markets at 1% profit (52% annual) beats one trading 30-day markets at 2% profit (24% annual)
+- Compounding effect: freed capital can be re-deployed to new opportunities
+- Risk consideration: shorter lock = less time for unexpected events
+
+**Implementation Priority**: P1 (important for realistic strategy evaluation). Without this, parameter sweep may recommend long-lock trades that destroy capital efficiency.
+
+#### 7. Skip Reasons: The Most Valuable Data [Expert Emphasis]
+
+**Why Skip Reasons Matter More Than Trade Logs**:
+
+Looking at trade logs only tells you "what worked." Skip reasons tell you **"what could work with different parameters"**.
+
+| Skip Reason | Diagnostic Value | Action |
+|-------------|------------------|--------|
+| `gas_too_high` | Gas cost exceeds profit | Batch orders? Wait for lower gas? |
+| `low_liquidity` | Orderbook too thin | Increase `min_liquidity` param |
+| `spread_too_small` | Opportunity exists but unprofitable | Lower `min_profit_rate`? |
+| `cost_ge_one` | No arbitrage (market efficient) | Skip this market |
+| `below_min_notional` | Position too small | Aggregate across markets? |
+| `fill_rate_low` | Would move the market | Conservative sizing correct |
+| `lock_too_long` | Capital efficiency concern | Prefer short-term markets |
+
+**Aggregation for Analysis**:
+```sql
+-- Which skip reason is most common?
+SELECT skip_reason, COUNT(*) as count, 
+       SUM(potential_profit) as missed_profit
+FROM scan_stats
+GROUP BY skip_reason
+ORDER BY missed_profit DESC;
+```
+
+**Key Question to Answer**:
+> "If I reduce `min_profit_rate` by 0.1%, how many more trades would I have taken, and what would the aggregate PnL be?"
+
+This is only answerable with comprehensive skip-reason logging.
+
+#### 8. Dependency: scan_stats Dataset
 
 P2 requires `scan_stats` from Stage A to diagnose "why no opportunities".
 
@@ -2636,20 +2923,23 @@ Without `scan_stats`:
 - Cannot distinguish "no data" vs "opportunities filtered out"
 - Cannot tune parameters based on skip reasons
 
-#### 8. Implementation Checklist
+#### 9. Implementation Checklist
 
 | Task | Priority | Depends On | Status |
 |------|----------|------------|--------|
 | `--gas-cost-usd` CLI param | P0 | Stage C CLI | Pending |
 | Fill probability heuristic | P0 | Stage C CLI | Pending |
+| Resolution lock modeling | P0 | Market metadata | Pending |
 | `--mode microstructure` | P0 | Stage C CLI | Pending |
 | `--mode sweep` with grid | P0 | Stage C CLI | Pending |
 | Capital turnover metric | P1 | SimState | Pending |
+| `max_lock_days` param sweep | P1 | Resolution lock | Pending |
 | Train/test split logic | P1 | Sweep mode | Pending |
 | JSON config output | P1 | Validation | Pending |
 | `scan_stats` recorder | P1 | Stage A | Pending |
+| Reorg detection (SQLite) | P2 | confirmed_orders | Pending |
 
-#### 9. Non-Goals
+#### 10. Non-Goals
 
 - No automatic production config updates (human review required)
 - No ML-based optimization (grid search sufficient for MVP)
@@ -2886,11 +3176,11 @@ chmod +x .githooks/pre-commit
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Create `.github/workflows/quick-check.yml` | P0 | Pending |
-| Add `swatinem/rust-cache@v2` | P0 | Pending |
-| Create `.github/workflows/full-audit.yml` | P1 | Pending |
-| Add `#[ignore]` to live tests | P1 | Pending |
-| Setup pre-commit hooks (optional) | P2 | Pending |
+| Create `.github/workflows/quick-check.yml` | P0 | ✅ Completed |
+| Add `swatinem/rust-cache@v2` | P0 | ✅ Completed |
+| Create `.github/workflows/full-audit.yml` | P1 | ✅ Completed |
+| Add `#[ignore]` to live tests | P1 | ✅ Completed |
+| Setup pre-commit hooks (optional) | P2 | ✅ Completed |
 
 ### 12.9 Why CI Matters for Trading Systems
 
