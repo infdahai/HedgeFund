@@ -264,6 +264,21 @@ See [Architecture Design](./docs/architecture.md) for detailed system diagrams.
 **Endpoints with retry**: `balance_of()`, `balance_of_batch()`
 **Handled errors**: timeout, connection errors, HTTP 503, HTTP 429
 
+## Strategy Shared Kernel (Core)
+
+The strategy logic is now centralized under `src/strategy/core/` and reused by live trading and
+backtest/research paths. `src/strategy/arbitrage.rs` is a thin facade that re-exports core types.
+
+**Modules:**
+- `core/detector.rs`: `ArbitrageDetector`, `ArbitrageOpportunity`, detection logic
+- `core/fees.rs`: fee curve + fee quoting helpers
+- `core/risk.rs`: minimal risk rules used pre-execution
+- `core/mod.rs`: shared types (`MarketInfo`, `OrderbookSide`, `TradeSide`, `MarketOrderbook`)
+
+**Backtest integration:**
+- `src/strategy/backtest/mod.rs` uses `strategy::core` types directly.
+- `src/bin/research.rs` uses `ArbitrageDetector` from `strategy::core`.
+
 ## Key Addresses
 | Item | Address |
 |------|---------|

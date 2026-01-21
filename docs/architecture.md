@@ -811,7 +811,37 @@ Supports scan-only mode via `OPINION_SCAN_ONLY=true` to disable order submission
 
 **Components:**
 
-#### 5.9.1 Arbitrage Detector (`arbitrage.rs`)
+#### 5.9.1 Strategy Core (Shared Kernel)
+
+**Location:** `src/strategy/core/`
+
+This is the shared kernel used by **both live trading and backtest/research** paths.
+`src/strategy/arbitrage.rs` is now a thin facade that re-exports the core types.
+
+```text
+                    ┌──────────────────────────────┐
+                    │   Strategy Core (Shared)     │
+                    │  src/strategy/core/*         │
+                    │  - detector / fees / risk    │
+                    └──────────────┬───────────────┘
+                                   │
+                     ┌─────────────┴─────────────┐
+                     ▼                           ▼
+          ┌──────────────────────┐     ┌──────────────────────┐
+          │ Live Engine          │     │ Backtest / Research  │
+          │ - WS/REST orderbook  │     │ - Polars IO + replay │
+          │ - Execution gateway  │     │ - SimState + latency │
+          └──────────────────────┘     └──────────────────────┘
+```
+
+**Modules:**
+
+- `core/detector.rs`: `ArbitrageDetector`, `ArbitrageOpportunity`, detection logic
+- `core/fees.rs`: fee curve + fee quoting helpers
+- `core/risk.rs`: lightweight risk rules used pre-execution
+- `core/mod.rs`: shared types (`MarketInfo`, `OrderbookSide`, `TradeSide`, `MarketOrderbook`)
+
+#### 5.9.2 Arbitrage Detector (`core/detector.rs`)
 
 Detects and evaluates arbitrage opportunities across different market types.
 
@@ -824,24 +854,28 @@ Detects and evaluates arbitrage opportunities across different market types.
 | **Mint-Sell** | `yes_bid + no_bid > 1.0` | Mint @ $1.0, sell both | Immediate spread profit |
 | **Spread** | Wide bid-ask spread | Place orders inside spread | Capture spread + fees |
 
-**Key Structures:**
+**Key Structures (authoritative):**
 
 ```rust
 pub struct ArbitrageDetector {
     config: ArbitrageConfig,
     opportunity_counter: u64,
+    stats: ArbScanStats,
 }
 
 pub struct ArbitrageOpportunity {
     pub id: String,
     pub arb_type: ArbitrageType,
+    pub market_id: String,
     pub total_cost: f64,          // Unit cost (sum of prices)
     pub total_spend: f64,         // Total spend (max_size + fees)
+    pub gross_profit_rate: f64,   // Profit % before fees
     pub net_profit_abs: f64,      // Net profit in USDT for max_size
     pub net_profit_rate: f64,     // Profit % after fees
     pub max_size: f64,           // Maximum executable size
     pub legs: Vec<ArbitrageLeg>, // Individual orders
     pub detected_at: u64,
+    pub is_valid: bool,
 }
 
 pub struct ArbitrageLeg {
@@ -850,12 +884,13 @@ pub struct ArbitrageLeg {
     pub side: TradeSide,        // Buy or Sell
     pub price: f64,
     pub size: f64,
+    pub available_liquidity: f64,
 }
 ```
 
 **Fee Calculation:**
 
-Opinion uses a symmetric fee curve:
+Opinion uses a symmetric fee curve (implemented in `core/fees.rs`):
 ```
 Fee Rate = topic_rate * price * (1 - price)
 ```
@@ -880,7 +915,7 @@ if total_spend < 1.0 * size {
 }
 ```
 
-#### 5.9.2 Market Scanner (`market_scanner.rs`)
+#### 5.9.3 Market Scanner (`market_scanner.rs`)
 
 Continuously monitors markets for opportunities.
 
@@ -909,8 +944,14 @@ pub struct MarketInfo {
     pub question: String,
     pub yes_token_id: String,
     pub no_token_id: String,
+    pub yes_pair: String,
+    pub no_pair: String,
     pub volume_24h: f64,
+    pub liquidity: f64,
     pub is_active: bool,
+    pub market_type: Option<i32>,
+    pub root_market_id: Option<String>,
+    pub parent_title: Option<String>,
 }
 
 pub struct MarketOrderbook {
@@ -1669,7 +1710,12 @@ tracing = "0.1"
 
 Phase 0: Data Collector (no trading)
 
-Initialize SQLite (WAL) and record snapshots + confirmations.
+Note: current code still records orderbook snapshots into SQLite
+(`orderbook_snapshots`, `orderbook_levels`) alongside confirmed orders. The
+long-term target is to keep SQLite only for `confirmed_orders` once Parquet is
+fully adopted.
+
+Initialize SQLite (WAL) and record snapshots + confirmations (legacy; see note above).
 Capture orderbook snapshots for YES/NO pairs with depth limit.
 Persist confirmed orders for offline analysis.
 
@@ -1735,7 +1781,8 @@ Strategic note: external limits (API TPS, chain confirmation) dominate latency. 
 
 Intent: keep SQLite for small, transactional data; move high-volume market snapshots to columnar files.
 
-- Keep SQLite for `confirmed_orders` only (small, high-value, transactional).
+- Keep SQLite for `confirmed_orders` (small, high-value, transactional).
+- Orderbook snapshot tables still exist in SQLite today; remove once Parquet is the sole snapshot store.
 - Add a `ParquetRecorder` that receives data via `tokio::mpsc` to avoid blocking the hot path.
 - Batch + rotate files: flush every N records or T seconds, rotate hourly or by size.
 - File layout example (Hive partitioning): `data/parquet/orderbook_snapshots_v1/date=YYYY-MM-DD/hour=HH/part-000.parquet`.
@@ -1887,6 +1934,25 @@ Rationale:
 - Use Rust iterators for stateful simulation (latency, position lock, risk rules).
 - Do **not** attempt to encode stateful trading logic in Polars expressions.
 
+```text
+Parquet (Stage A)            Stage C Pipeline (Offline)
+┌────────────────────┐       ┌────────────────────────────────────────────┐
+│ orderbook snapshots │──────▶│ Polars Lazy (filter/scan/partition prune) │
+│ scan stats          │       └───────────────┬────────────────────────────┘
+└────────────────────┘                       │
+                                             ▼
+                              ┌───────────────────────────────────┐
+                              │ Rust Iterator Replay (Stateful)   │
+                              │ - SimState (balance/locks)        │
+                              │ - latency + risk rules            │
+                              │ - reuse Strategy Core             │
+                              └───────────────┬───────────────────┘
+                                              ▼
+                              ┌───────────────────────────────────┐
+                              │ Reports / Params / Diagnostics    │
+                              └───────────────────────────────────┘
+```
+
 **Optional:** DuckDB for ad-hoc SQL exploration (not required for the core workflow).
 
 #### Inputs
@@ -1907,7 +1973,7 @@ Rationale:
 2. **Data Cleaning & Normalization**
    - Enforce price precision: round to 1 decimal (0.1 - 0.9).
    - Reject rows that violate minimum notional (use runtime config default).
-   - Strictly reuse fee calculation from `strategy/arbitrage.rs` to avoid drift.
+   - Strictly reuse fee calculation from `strategy/core/fees.rs` to avoid drift.
 
 3. **Stateful Simulation (Rust iterator)**
    - Partition by `market_id` and simulate each market independently.
