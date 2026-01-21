@@ -22,9 +22,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN_STABLE || 'stable' }}
+          profile: minimal
+          toolchain: stable
+          override: true
           components: rustfmt, clippy
 
       # CRITICAL: This cache provides 10x speedup for Rust builds
