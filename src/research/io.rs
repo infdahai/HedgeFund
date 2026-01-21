@@ -25,7 +25,7 @@ pub(crate) fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
             Ok(frame) => frame,
             Err(err) => {
                 skipped += 1;
-                warn!("skip corrupt parquet file", path = ?path, error = %err);
+                warn!(target: "research", "skip corrupt parquet file: {:?}, error: {}", path, err);
                 continue;
             }
         };
@@ -45,10 +45,10 @@ pub(crate) fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
     }
 
     if skipped > 0 {
-        warn!("parquet files skipped", skipped = skipped);
+        warn!(target: "research", "parquet files skipped: {}", skipped);
     }
     if not_ready > 0 {
-        warn!("parquet partitions not ready", skipped = not_ready);
+        warn!(target: "research", "parquet partitions not ready: {}", not_ready);
     }
 
     let df = concat(frames, UnionArgs::default())?

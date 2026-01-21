@@ -675,6 +675,7 @@ async fn main() -> Result<()> {
                     yesno_low_liquidity: stats.yesno_low_liquidity,
                     yesno_below_min_notional: stats.yesno_below_min_notional,
                     yesno_below_min_profit: stats.yesno_below_min_profit,
+                    yesno_best_overpay: stats.yesno_best_overpay,
                     mint_sell_checked: stats.mint_sell_checked,
                     mint_sell_found: stats.mint_sell_found,
                     mint_sell_missing_bid: stats.mint_sell_missing_bid,
@@ -682,6 +683,7 @@ async fn main() -> Result<()> {
                     mint_sell_low_liquidity: stats.mint_sell_low_liquidity,
                     mint_sell_below_min_notional: stats.mint_sell_below_min_notional,
                     mint_sell_below_min_profit: stats.mint_sell_below_min_profit,
+                    mint_sell_best_shortfall: stats.mint_sell_best_shortfall,
                     neg_risk_checked: stats.neg_risk_checked,
                     neg_risk_found: stats.neg_risk_found,
                     neg_risk_missing_ask: stats.neg_risk_missing_ask,
@@ -689,6 +691,7 @@ async fn main() -> Result<()> {
                     neg_risk_low_liquidity: stats.neg_risk_low_liquidity,
                     neg_risk_below_min_notional: stats.neg_risk_below_min_notional,
                     neg_risk_below_min_profit: stats.neg_risk_below_min_profit,
+                    neg_risk_best_overpay: stats.neg_risk_best_overpay,
                 });
             }
         }

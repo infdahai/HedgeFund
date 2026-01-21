@@ -1803,7 +1803,7 @@ This section defines the **exact execution order** for remaining work. Follow th
 
 | Component | Design | Code | Tests | Status |
 |-----------|--------|------|-------|--------|
-| **Stage A: Parquet Recorder** | ✅ | 90% | ✅ | `scan_stats` missing |
+| **Stage A: Parquet Recorder** | ✅ | ✅ | ✅ | Complete (incl. best-overpay columns) |
 | **Stage C: Research CLI** | ✅ | 80% | ✅ | Gas/fill modeling missing |
 | **P2: Strategy Iteration** | ✅ | 0% | - | All pending |
 | **Section 12: CI/CD** | ✅ | 0% | - | Workflow files missing |

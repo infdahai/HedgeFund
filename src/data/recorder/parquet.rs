@@ -57,6 +57,7 @@ pub struct ScanStatsRow {
     pub yesno_low_liquidity: u64,
     pub yesno_below_min_notional: u64,
     pub yesno_below_min_profit: u64,
+    pub yesno_best_overpay: f64,
     pub mint_sell_checked: u64,
     pub mint_sell_found: u64,
     pub mint_sell_missing_bid: u64,
@@ -64,6 +65,7 @@ pub struct ScanStatsRow {
     pub mint_sell_low_liquidity: u64,
     pub mint_sell_below_min_notional: u64,
     pub mint_sell_below_min_profit: u64,
+    pub mint_sell_best_shortfall: f64,
     pub neg_risk_checked: u64,
     pub neg_risk_found: u64,
     pub neg_risk_missing_ask: u64,
@@ -71,6 +73,7 @@ pub struct ScanStatsRow {
     pub neg_risk_low_liquidity: u64,
     pub neg_risk_below_min_notional: u64,
     pub neg_risk_below_min_profit: u64,
+    pub neg_risk_best_overpay: f64,
 }
 
 #[derive(Debug)]
@@ -663,6 +666,7 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
         .collect();
     let yesno_below_min_profit: Vec<u64> =
         rows.iter().map(|row| row.yesno_below_min_profit).collect();
+    let yesno_best_overpay: Vec<f64> = rows.iter().map(|row| row.yesno_best_overpay).collect();
     let mint_sell_checked: Vec<u64> = rows.iter().map(|row| row.mint_sell_checked).collect();
     let mint_sell_found: Vec<u64> = rows.iter().map(|row| row.mint_sell_found).collect();
     let mint_sell_missing_bid: Vec<u64> =
@@ -681,6 +685,10 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
         .iter()
         .map(|row| row.mint_sell_below_min_profit)
         .collect();
+    let mint_sell_best_shortfall: Vec<f64> = rows
+        .iter()
+        .map(|row| row.mint_sell_best_shortfall)
+        .collect();
     let neg_risk_checked: Vec<u64> = rows.iter().map(|row| row.neg_risk_checked).collect();
     let neg_risk_found: Vec<u64> = rows.iter().map(|row| row.neg_risk_found).collect();
     let neg_risk_missing_ask: Vec<u64> = rows.iter().map(|row| row.neg_risk_missing_ask).collect();
@@ -695,6 +703,8 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
         .iter()
         .map(|row| row.neg_risk_below_min_profit)
         .collect();
+    let neg_risk_best_overpay: Vec<f64> =
+        rows.iter().map(|row| row.neg_risk_best_overpay).collect();
 
     DataFrame::new(vec![
         Series::new("scan_ts_us".into(), scan_ts_us).into(),
@@ -707,6 +717,7 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
         Series::new("yesno_low_liquidity".into(), yesno_low_liquidity).into(),
         Series::new("yesno_below_min_notional".into(), yesno_below_min_notional).into(),
         Series::new("yesno_below_min_profit".into(), yesno_below_min_profit).into(),
+        Series::new("yesno_best_overpay".into(), yesno_best_overpay).into(),
         Series::new("mint_sell_checked".into(), mint_sell_checked).into(),
         Series::new("mint_sell_found".into(), mint_sell_found).into(),
         Series::new("mint_sell_missing_bid".into(), mint_sell_missing_bid).into(),
@@ -722,6 +733,7 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
             mint_sell_below_min_profit,
         )
         .into(),
+        Series::new("mint_sell_best_shortfall".into(), mint_sell_best_shortfall).into(),
         Series::new("neg_risk_checked".into(), neg_risk_checked).into(),
         Series::new("neg_risk_found".into(), neg_risk_found).into(),
         Series::new("neg_risk_missing_ask".into(), neg_risk_missing_ask).into(),
@@ -737,6 +749,7 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
             neg_risk_below_min_profit,
         )
         .into(),
+        Series::new("neg_risk_best_overpay".into(), neg_risk_best_overpay).into(),
     ])
 }
 
@@ -956,6 +969,108 @@ mod tests {
         let row2_bids = bids.get_as_series(1).expect("row2 bids missing");
         assert_eq!(row1_bids.len(), 2);
         assert_eq!(row2_bids.len(), 0);
+
+        let _ = std::fs::remove_file(&filename);
+        let _ = std::fs::remove_dir_all(&base_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_stats_round_trip() -> PolarsResult<()> {
+        let base_ts_us = 1_700_000_100_000_000i64;
+        let base_dir = std::env::temp_dir().join("scan_stats_roundtrip");
+        let base_dir_str = base_dir.to_string_lossy().to_string();
+        let (orderbook_dir, scan_stats_dir) = resolve_dataset_dirs(&base_dir_str);
+        let metadata = build_parquet_metadata(&ParquetConfig::default());
+        let mut recorder = ParquetRecorder::new(
+            orderbook_dir,
+            scan_stats_dir.clone(),
+            2,
+            ParquetCompression::Zstd(None),
+            0,
+            metadata,
+        );
+
+        let row1 = ScanStatsRow {
+            scan_ts_us: base_ts_us,
+            duration_us: 500,
+            markets_scanned: 10,
+            yesno_checked: 10,
+            yesno_found: 1,
+            yesno_missing_ask: 2,
+            yesno_cost_ge_one: 3,
+            yesno_low_liquidity: 4,
+            yesno_below_min_notional: 5,
+            yesno_below_min_profit: 6,
+            yesno_best_overpay: 0.012,
+            mint_sell_checked: 8,
+            mint_sell_found: 2,
+            mint_sell_missing_bid: 1,
+            mint_sell_revenue_le_one: 1,
+            mint_sell_low_liquidity: 1,
+            mint_sell_below_min_notional: 1,
+            mint_sell_below_min_profit: 1,
+            mint_sell_best_shortfall: 0.034,
+            neg_risk_checked: 7,
+            neg_risk_found: 1,
+            neg_risk_missing_ask: 1,
+            neg_risk_cost_ge_one: 2,
+            neg_risk_low_liquidity: 3,
+            neg_risk_below_min_notional: 4,
+            neg_risk_below_min_profit: 5,
+            neg_risk_best_overpay: 0.056,
+        };
+        let row2 = ScanStatsRow {
+            scan_ts_us: base_ts_us + 1_000_000,
+            duration_us: 800,
+            markets_scanned: 12,
+            yesno_checked: 12,
+            yesno_found: 0,
+            yesno_missing_ask: 1,
+            yesno_cost_ge_one: 2,
+            yesno_low_liquidity: 3,
+            yesno_below_min_notional: 4,
+            yesno_below_min_profit: 5,
+            yesno_best_overpay: f64::INFINITY,
+            mint_sell_checked: 9,
+            mint_sell_found: 0,
+            mint_sell_missing_bid: 2,
+            mint_sell_revenue_le_one: 2,
+            mint_sell_low_liquidity: 2,
+            mint_sell_below_min_notional: 2,
+            mint_sell_below_min_profit: 2,
+            mint_sell_best_shortfall: f64::INFINITY,
+            neg_risk_checked: 8,
+            neg_risk_found: 0,
+            neg_risk_missing_ask: 2,
+            neg_risk_cost_ge_one: 2,
+            neg_risk_low_liquidity: 2,
+            neg_risk_below_min_notional: 2,
+            neg_risk_below_min_profit: 2,
+            neg_risk_best_overpay: f64::INFINITY,
+        };
+
+        recorder.scan_stats_buffer.push(row1);
+        recorder.scan_stats_buffer.push(row2);
+        recorder.flush()?;
+        recorder.shutdown()?;
+
+        let expected_dt = DateTime::<Utc>::from_timestamp_micros(base_ts_us).unwrap();
+        let expected_dir = format!(
+            "{}/date={}/hour={:02}",
+            scan_stats_dir,
+            expected_dt.format("%Y-%m-%d"),
+            expected_dt.hour()
+        );
+        let filename = format!("{}/part-000000.parquet", expected_dir);
+        assert!(Path::new(&filename).exists());
+
+        let file = File::open(&filename)?;
+        let df = ParquetReader::new(file).finish()?;
+        assert_eq!(df.height(), 2);
+        assert!(df.column("yesno_best_overpay").is_ok());
+        assert!(df.column("mint_sell_best_shortfall").is_ok());
+        assert!(df.column("neg_risk_best_overpay").is_ok());
 
         let _ = std::fs::remove_file(&filename);
         let _ = std::fs::remove_dir_all(&base_dir);
