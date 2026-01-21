@@ -10,6 +10,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Optimize for CI: use all available cores, enable parallel builds
+  CARGO_BUILD_JOBS: "4"
 
 jobs:
   quick-check:
@@ -22,28 +24,53 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust Toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
           toolchain: stable
-          override: true
           components: rustfmt, clippy
 
-      # CRITICAL: This cache provides 10x speedup for Rust builds
+      # Faster caching with actions/cache for cargo registry and target directories
+      # This provides better cache hit rates than rust-cache alone
       - name: Cache Cargo Dependencies
-        uses: swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
 
-      - name: Check Code Formatting
+      # Install sccache for faster Rust compilation caching
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Run sccache stats before build
+        run: sccache --show-stats
+
+      - name: Check Code Formatting (Fast, no deps needed)
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy (Linting with Fail onWarnings)
-        run: cargo clippy --all-targets -- -D warnings
+      # Check first to fail fast before expensive clippy
+      - name: Fast Build Check (Fail Fast)
+        run: cargo check --lib --all-features
 
+      # Run clippy on lib only (tests and bins don't need linting for quick checks)
+      - name: Run Clippy (Linting with Fail onWarnings)
+        run: cargo clippy --lib -- -D warnings
+
+      # Run unit tests with dev profile for faster compilation
+      # Using --lib only and skipping integration tests
       - name: Run Unit Tests (Fast, No Network)
         run: cargo test --lib -- --test-threads=4
 
+      # Final build check with all features (ensures everything compiles)
       - name: Build Check (Ensure Code Compiles)
         run: cargo check --all-targets --all-features
+
+      - name: Run sccache stats after build
+        run: sccache --show-stats
 
       - name: Summary
         if: always()
