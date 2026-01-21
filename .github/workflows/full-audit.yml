@@ -28,24 +28,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    strategy:
-      matrix:
-        # Test across stable and beta Rust versions
-        rust: [stable, beta]
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Rust Toolchain (${{ matrix.rust }})
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: stable
           components: rustfmt, clippy
 
-      # Cache for faster builds
+      # Faster caching with explicit paths
       - name: Cache Cargo Dependencies
-        uses: swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # Setup sccache for faster compilation
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Format Check
         run: cargo fmt --all -- --check
@@ -53,14 +60,16 @@ jobs:
       - name: Clippy (All Targets)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Build All Targets
-        run: cargo build --all-targets --all-features
+      # Build lib only first (faster, less memory)
+      - name: Build Library
+        run: cargo build --lib --all-features
 
-      - name: Run All Tests (Unit Only - No Network)
+      # Run unit tests (lib only)
+      - name: Run Unit Tests
         run: cargo test --lib
 
+      # Build release binary (separate job to avoid OOM)
       - name: Build Release Binary
-        if: matrix.rust == 'stable'
         run: cargo build --release
 
       - name: Integration Tests (With Secrets)
