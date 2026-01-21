@@ -1964,6 +1964,82 @@ This section defines the **exact execution order** for remaining work. Follow th
 | ML-based fill probability | Insufficient data | After 10K+ trades logged |
 | Real-time parameter updates | Safety concern | Never (human review required) |
 
+### Implementation Specifications (Steps 5-10)
+
+#### Step 5: Microstructure Analysis Mode (`--mode microstructure`)
+
+**Goal**: Output raw metrics to CSV for external analysis (Python/Pandas) to understand market characteristics before tuning.
+
+**Files**:
+- `src/research/config.rs`: Add `RunMode` enum (`Backtest`, `Microstructure`, `Sweep`).
+- `src/research/mod.rs`: Branch execution based on mode.
+- `src/research/report.rs`: Add `write_microstructure_report`.
+
+**Output**: `reports/microstructure.csv`
+- Columns: `market_id`, `liquidity_pct`, `spread_p50`, `spread_p95`, `slippage_100`, `opps_per_hour`
+
+#### Step 6: Parameter Sweep Mode (`--mode sweep`)
+
+**Goal**: Grid search over strategy parameters to find optimal configuration.
+
+**Files**:
+- `src/research/sweep.rs` (NEW): Logic to generate grid and run parallel simulations.
+- `src/research/mod.rs`: Integrate sweep module.
+
+**Grid**:
+- `min_profit_rate`: 0.002, 0.003, 0.005, 0.007, 0.01
+- `min_liquidity`: 0, 25, 50, 100, 200
+- `gas_cost_usd`: 0.30, 0.60, 1.00
+
+**Output**: `reports/param_sweep.csv`
+- Columns: `min_profit_rate`, `min_liquidity`, `gas_cost_usd`, `trades`, `pnl`, `max_drawdown`, `win_rate`, `sharpe`
+
+#### Step 7: Capital Turnover Metric
+
+**Goal**: Optimize for capital efficiency (`PnL / average_locked_capital`) rather than just raw PnL.
+
+**Changes**:
+- `SimState`: Track `locked_time_weighted_sum` and `total_traded_notional`.
+- `apply_confirmations()`: Update weighted sum based on elapsed time.
+- `MarketReport`: Include `capital_efficiency` metric.
+
+#### Step 8: Train/Test Validation
+
+**Goal**: Prevent overfitting by validating parameters on unseen time periods.
+
+**Changes**:
+- CLI: Add `--train-ratio` (default 0.7).
+- Logic: Split `MarketTick` vectors by timestamp.
+- Workflow:
+    1. Run sweep on Train set.
+    2. Pick best config.
+    3. Run single simulation on Test set.
+    4. Report PnL gap.
+
+#### Step 9: JSON Config Export
+
+**Goal**: Automate the transfer of research results to production config.
+
+**Changes**:
+- `sweep.rs`: Export `RecommendedConfig` struct to `reports/recommended_config.json`.
+- Include metadata: `generated_at`, `data_range`, `expected_metrics`.
+
+#### Step 10: Reorg Detection (SQLite Schema)
+
+**Goal**: Add data support for detecting chain reorgs (block number tracking).
+
+**Critical Technical Constraints (Expert Feedback)**:
+1.  **Idempotent Migrations**: Do NOT use simple `ALTER TABLE` scripts. Daily DB rotation means every new file needs the schema update. Use `ensure_schema()` pattern in Rust code to apply migrations if columns are missing.
+2.  **Optional tx_hash**: We rely on `balanceOf` polling, so we might not have a transaction hash. Make `tx_hash` nullable/optional.
+3.  **Mandatory Block Number**: Must call `get_block_number()` immediately after `balanceOf()` to anchor the state to a chain height.
+
+**Schema Updates**:
+- `confirmed_orders`: Add `block_number` (INTEGER), `tx_hash` (TEXT, nullable), `reorg_checked` (INTEGER default 0).
+
+**Changes**:
+- `src/data/recorder/mod.rs`: Update `init_schema` and `insert_confirmed_order`.
+- `src/execution/confirmation.rs`: Fetch block number during confirmation cycle.
+
 ### Stage A: Local Structured Recorder (Parquet sidecar)
 
 Intent: keep SQLite for small, transactional data; move high-volume market snapshots to columnar files.
