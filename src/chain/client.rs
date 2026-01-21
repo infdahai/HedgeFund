@@ -309,6 +309,49 @@ impl ChainClient {
         self.account
     }
 
+    pub async fn get_block_number(&self) -> Result<u64> {
+        for attempt in 1..=3 {
+            let provider = self.get_healthy_provider().await;
+            match provider.get_block_number().await {
+                Ok(block_number) => return Ok(block_number),
+                Err(e) => {
+                    let err_str: String = e.to_string();
+                    let is_transient = err_str.contains("timeout")
+                        || err_str.contains("connection")
+                        || err_str.contains("503")
+                        || err_str.contains("429");
+
+                    let is_node_fail = err_str.contains("connection refused")
+                        || err_str.contains("network unreachable")
+                        || err_str.contains("host unreachable")
+                        || err_str.contains("dns error")
+                        || err_str.contains("timeout");
+
+                    if is_node_fail {
+                        self.mark_primary_unhealthy().await;
+                    }
+
+                    if (is_transient || is_node_fail) && attempt < 3 {
+                        tracing::warn!("RPC error on attempt {}, retrying: {}", attempt, err_str);
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500 * 2u64.pow(attempt as u32 - 1),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(Error::ContractError {
+                        method: "get_block_number".into(),
+                        reason: e.to_string(),
+                    });
+                }
+            }
+        }
+        Err(Error::ContractError {
+            method: "get_block_number".into(),
+            reason: "max retries exceeded".into(),
+        })
+    }
+
     pub fn contract_address(&self) -> Address {
         self.contract_address
     }
