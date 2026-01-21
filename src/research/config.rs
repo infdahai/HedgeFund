@@ -4,8 +4,17 @@ use anyhow::{anyhow, Context, Result};
 
 pub(crate) const DEFAULT_GAS_COST_USD: f64 = 0.60;
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) enum RunMode {
+    #[default]
+    Backtest,
+    Microstructure,
+    Sweep,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CliConfig {
+    pub(crate) mode: RunMode,
     pub(crate) input: String,
     pub(crate) output: String,
     pub(crate) market_id: Option<String>,
@@ -21,6 +30,7 @@ pub(crate) struct CliConfig {
 }
 
 pub(crate) fn parse_args() -> Result<CliConfig> {
+    let mut mode = RunMode::Backtest;
     let mut input = "data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet".to_string();
     let mut output = "reports/potential_trades.csv".to_string();
     let mut market_id = None;
@@ -37,6 +47,15 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--mode" => {
+                let mode_str = args.next().context("--mode requires a value")?;
+                mode = match mode_str.as_str() {
+                    "backtest" => RunMode::Backtest,
+                    "microstructure" => RunMode::Microstructure,
+                    "sweep" => RunMode::Sweep,
+                    _ => return Err(anyhow!("unknown mode: {mode_str}")),
+                };
+            }
             "--input" => input = args.next().context("--input requires a value")?,
             "--output" => output = args.next().context("--output requires a value")?,
             "--market-id" => market_id = Some(args.next().context("--market-id requires a value")?),
@@ -104,6 +123,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
     }
 
     Ok(CliConfig {
+        mode,
         input,
         output,
         market_id,
@@ -121,9 +141,10 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
 
 fn print_help() {
     println!(
-        "research --input <glob> --output <csv> [--market-id <id>] [--initial-balance <usdt>]
+        "research [--mode <backtest|microstructure|sweep>] --input <glob> --output <csv> 
+    [--market-id <id>] [--initial-balance <usdt>]
     [--min-profit-rate <rate>] [--min-liquidity <qty>] [--min-order-notional <usdt>]
     [--min-fee <usdt>] [--gas-cost-usd <usdt>] [--confirm-delay-us <micros>]
-    [--confirmed-db <path>] [--market-metadata <path>]\n\nDefaults:\n  --input data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet\n  --output reports/potential_trades.csv\n  --initial-balance 1000\n  --min-profit-rate 0.005\n  --min-liquidity 0\n  --min-order-notional 1.30\n  --min-fee 0.50\n  --gas-cost-usd 0.60\n  --confirm-delay-us 3000000\n  --confirmed-db (unset)\n  --market-metadata (unset)"
+    [--confirmed-db <path>] [--market-metadata <path>]\n\nDefaults:\n  --mode backtest\n  --input data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet\n  --output reports/potential_trades.csv\n  --initial-balance 1000\n  --min-profit-rate 0.005\n  --min-liquidity 0\n  --min-order-notional 1.30\n  --min-fee 0.50\n  --gas-cost-usd 0.60\n  --confirm-delay-us 3000000\n  --confirmed-db (unset)\n  --market-metadata (unset)"
     );
 }

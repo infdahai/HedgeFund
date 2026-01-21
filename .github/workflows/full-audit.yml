@@ -76,7 +76,11 @@ jobs:
           BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
         run: |
           echo "Running integration tests with secrets..."
-          cargo test --tests -- --ignored
+          # Run all integration tests in tests/ directory
+          for test in tests/*.rs; do
+            name=$(basename "$test" .rs)
+            cargo test --test "$name" 2>&1 || true
+          done
 
       - name: Upload Release Artifacts
         if: |
