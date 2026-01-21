@@ -271,6 +271,8 @@ impl ConfirmationTracker {
                             }
                         };
 
+                        let block_number = self.chain_client.get_block_number().await.ok();
+
                         let confirmed = ConfirmedOrder {
                             order_id: pending.order_id,
                             market_id: pending.market_id,
