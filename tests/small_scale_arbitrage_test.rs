@@ -136,6 +136,8 @@ async fn fetch_market_with_orderbook(
     None
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_arbitrage_detector_yesno() {
     let (client, _) = setup().await;
@@ -205,6 +207,8 @@ async fn test_arbitrage_detector_yesno() {
         }
     }
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_arbitrage_detector_mint_sell() {
@@ -280,6 +284,8 @@ async fn test_arbitrage_detector_mint_sell() {
         }
     }
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_arbitrage_configuration() {

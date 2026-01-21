@@ -17,6 +17,8 @@ async fn setup() -> (OpinionClient, Config) {
     (client, config)
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_get_latest_price() {
     let (client, _) = setup().await;
@@ -36,6 +38,8 @@ async fn test_get_latest_price() {
     assert!(!price.price.is_empty());
     assert!(price.timestamp > 0);
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_get_price_history() {
@@ -62,6 +66,8 @@ async fn test_get_price_history() {
         assert!(entry.timestamp > 0);
     }
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_get_order_by_id() {

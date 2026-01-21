@@ -18,7 +18,8 @@
 10. [Dependencies](https://www.google.com/search?q=%239-dependencies)
 11. [Test Plan](https://www.google.com/search?q=%2310-test-plan)
 12. [Implementation Order](https://www.google.com/search?q=%2311-implementation-order)
-13. [New Session Prompt](https://www.google.com/search?q=%2312-new-session-prompt)
+13. [CI/CD Pipeline](https://www.google.com/search?q=%2312-cicd-pipeline)
+14. [New Session Prompt](https://www.google.com/search?q=%2313-new-session-prompt)
 
 ---
 
@@ -2377,7 +2378,7 @@ WinRate 0.85      0.82     -3.5%
 Recommendation: Config stable (gap < 15%)
 ```
 
-**D. Config Output**
+#### 5. Config Output
 
 Export recommended parameters for production use.
 
@@ -2389,7 +2390,8 @@ Export recommended parameters for production use.
   "data_period": { "start": "2026-01-15", "end": "2026-01-20" },
   "recommended": {
     "min_profit_rate": 0.003,
-    "min_liquidity": 50.0
+    "min_liquidity": 50.0,
+    "gas_cost_usd": 0.60
   },
   "validation": {
     "train_pnl": 15.67,
@@ -2399,7 +2401,124 @@ Export recommended parameters for production use.
 }
 ```
 
-#### 5. Dependency: scan_stats Dataset
+#### 6. Realistic PnL Modeling (Critical for Backtest Accuracy)
+
+The research CLI must model real-world costs accurately to avoid inflated backtest results.
+
+**A. Gas Cost Modeling**
+
+BNB Chain gas costs are non-trivial for small arbitrage opportunities.
+
+| Parameter | Default | Rationale |
+|-----------|---------|-----------|
+| `gas_cost_usd` | $0.60 | 2 transactions × ~$0.30 each (pessimistic estimate) |
+
+**Why this matters**:
+- Small arb ($5 notional × 0.5% profit = $0.025 gain) → Gas eats **2400%** of profit
+- Without gas modeling, backtest shows 100 profitable trades; reality shows 5
+
+**CLI Integration**:
+```bash
+cargo run --bin research -- \
+  --gas-cost-usd 0.60 \          # Default: $0.60 (2 txs × $0.30)
+  --input "data/parquet/..." \
+  --output reports/trades.csv
+```
+
+**Implementation in SimState**:
+```rust
+// In CliConfig
+gas_cost_usd: f64,  // Default: 0.60
+
+// In execute_trade()
+let gross_profit = opportunity.net_profit_abs;  // After platform fees
+let net_profit = gross_profit - config.gas_cost_usd;  // After gas
+
+if net_profit <= 0.0 {
+    // Skip: gas eats all profit
+    return;
+}
+```
+
+**Sensitivity Analysis Use Case**:
+```bash
+# Compare: "If we optimize gas to $0.20, how many more opportunities?"
+cargo run --bin research -- --gas-cost-usd 0.20 --output reports/low_gas.csv
+cargo run --bin research -- --gas-cost-usd 0.60 --output reports/high_gas.csv
+# Diff the trade counts
+```
+
+**B. Fill Probability Heuristic**
+
+Backtest must not assume 100% fill rate on quoted liquidity.
+
+**Problem**: Liquidity displayed at T may be gone by T+1 (latency, competition).
+
+**Heuristic Formula**:
+```
+fill_rate = min(1.0, (available_liquidity × 0.8) / order_size)
+```
+
+| Component | Value | Rationale |
+|-----------|-------|-----------|
+| `0.8` multiplier | 80% | Assume 20% of liquidity disappears before arrival (latency proxy) |
+| `order_size` | From opportunity | Planned trade size |
+| `available_liquidity` | From orderbook | Sum of sizes at target price level |
+
+**Decision Logic** (Conservative for MVP):
+```rust
+let fill_rate = (tick.yes.ask_size * 0.8 / opportunity.max_size).min(1.0);
+
+if fill_rate < 1.0 {
+    // Skip: insufficient reliable liquidity
+    debug!("skipped: fill_rate={:.2} < 1.0", fill_rate);
+    continue;
+}
+```
+
+**Alternative (Aggressive)**: Scale down order size instead of skipping:
+```rust
+let adjusted_size = opportunity.max_size * fill_rate;
+if adjusted_size < config.min_order_notional {
+    continue;  // Too small after adjustment
+}
+```
+
+**Recommendation**: Use **conservative skip** for MVP. Aggressive scaling requires more validation.
+
+**C. Capital Turnover Metric**
+
+Track capital efficiency, not just absolute PnL.
+
+**Formula**:
+```
+capital_turnover = total_traded_notional / avg_locked_capital
+capital_efficiency = PnL / avg_locked_capital
+```
+
+**Why this matters**: A strategy that locks $1000 for weeks to earn $10 is worse than one that turns $100 ten times to earn $10.
+
+**Implementation**:
+```rust
+struct SimState {
+    // Existing fields...
+    total_traded_notional: f64,   // Sum of all trade notionals
+    locked_time_weighted_sum: f64, // For avg_locked_capital calculation
+    last_update_ts_us: i64,
+}
+
+// In apply_confirmations():
+let elapsed_us = current_ts - state.last_update_ts_us;
+state.locked_time_weighted_sum += state.locked_balance * elapsed_us as f64;
+state.last_update_ts_us = current_ts;
+
+// In print_summary():
+let avg_locked = state.locked_time_weighted_sum / total_duration_us as f64;
+let capital_efficiency = pnl / avg_locked;
+println!("  capital_efficiency: {:.4}", capital_efficiency);
+```
+
+#### 7. Dependency: scan_stats Dataset
 
 P2 requires `scan_stats` from Stage A to diagnose "why no opportunities".
 
@@ -2409,17 +2528,20 @@ Without `scan_stats`:
 - Cannot distinguish "no data" vs "opportunities filtered out"
 - Cannot tune parameters based on skip reasons
 
-#### 6. Implementation Checklist
+#### 8. Implementation Checklist
 
 | Task | Priority | Depends On | Status |
 |------|----------|------------|--------|
+| `--gas-cost-usd` CLI param | P0 | Stage C CLI | Pending |
+| Fill probability heuristic | P0 | Stage C CLI | Pending |
 | `--mode microstructure` | P0 | Stage C CLI | Pending |
 | `--mode sweep` with grid | P0 | Stage C CLI | Pending |
+| Capital turnover metric | P1 | SimState | Pending |
 | Train/test split logic | P1 | Sweep mode | Pending |
 | JSON config output | P1 | Validation | Pending |
 | `scan_stats` recorder | P1 | Stage A | Pending |
 
-#### 7. Non-Goals
+#### 9. Non-Goals
 
 - No automatic production config updates (human review required)
 - No ML-based optimization (grid search sufficient for MVP)
@@ -2476,7 +2598,202 @@ Non-goals for this phase:
 - No S3 upload from the trading process.
 ---
 
-## 12. New Session Prompt
+## 12. CI/CD Pipeline
+
+### 12.1 Overview
+
+Continuous Integration ensures code quality persists while the codebase evolves. For a trading system, CI is a critical safety net—catching regressions before they reach production.
+
+**Design Philosophy**: Speed over Completeness for daily development; Thoroughness for releases.
+
+### 12.2 Two-Tier CI Strategy
+
+| Pipeline | Trigger | Duration | Purpose |
+|----------|---------|----------|---------|
+| **Quick Check** | Every push/PR | < 2 min | Fast feedback loop |
+| **Full Audit** | Nightly / Release | 5-10 min | Comprehensive validation |
+
+### 12.3 Quick Check Pipeline (Default)
+
+**File**: `.github/workflows/quick-check.yml`
+
+**Goals**:
+- Catch formatting/lint violations immediately
+- Run fast unit tests (no network, no API keys)
+- Block obvious regressions before merge
+
+**Jobs**:
+
+```yaml
+name: Quick Check
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Rust Quick Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Cache dependencies
+        uses: swatinem/rust-cache@v2  # CRITICAL: 10x faster builds
+      
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+      
+      - name: Clippy (Linting)
+        run: cargo clippy --all-targets -- -D warnings
+      
+      - name: Run Unit Tests (Fast)
+        run: cargo test --lib  # Excludes integration tests
+```
+
+**Key Points**:
+- `swatinem/rust-cache@v2` is **mandatory**—without it, Rust builds take 10+ minutes
+- `cargo test --lib` excludes integration tests (which require `.env` and network)
+- `-D warnings` fails on any clippy warning (strict quality gate)
+
+### 12.4 Full Audit Pipeline (Nightly/Release)
+
+**File**: `.github/workflows/full-audit.yml`
+
+**Goals**:
+- Run complete test suite including integration tests
+- Validate backtest/research tools
+- Generate build artifacts for releases
+
+**Jobs**:
+
+```yaml
+name: Full Audit
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:      # Manual trigger
+
+jobs:
+  full-test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - uses: swatinem/rust-cache@v2
+      
+      - name: Build All Targets
+        run: cargo build --all-targets
+      
+      - name: Run All Tests
+        run: cargo test --all
+        env:
+          # Integration tests skipped unless secrets provided
+          OPINION_API_KEY: ${{ secrets.OPINION_API_KEY }}
+          # ... other secrets as needed
+      
+      - name: Build Release Binary
+        run: cargo build --release
+```
+
+### 12.5 Integration Test Strategy
+
+**Problem**: Live integration tests require API keys and can be flaky due to external service availability.
+
+**Decision**: Skip integration tests in standard CI; run them only on nightly builds with secrets.
+
+| Test Type | Quick Check | Full Audit | Local Dev |
+|-----------|-------------|------------|-----------|
+| Unit tests (`--lib`) | ✅ Run | ✅ Run | ✅ Run |
+| Integration tests | ❌ Skip | ✅ Run (with secrets) | ✅ Run (with `.env`) |
+| Live tests | ❌ Skip | ⚠️ Optional | ✅ Manual |
+
+**Implementation**:
+```rust
+// In tests/live_*.rs
+#[tokio::test]
+#[ignore]  // Skipped by default in CI
+async fn test_live_order_lifecycle() {
+    // Requires OPINION_API_KEY
+}
+
+// Run locally with: cargo test -- --ignored
+// Run in CI with: cargo test --all (if secrets provided)
+```
+
+**Why Not Mock Servers?**:
+- Building a mock Opinion Trade API is high effort
+- Mocks can drift from real API behavior
+- Unit tests + occasional live tests are sufficient for MVP
+
+### 12.6 Caching Strategy
+
+**Critical**: Rust compilation is slow. Caching is mandatory for practical CI.
+
+| Cache Tool | What it Caches | Speedup |
+|------------|----------------|---------|
+| `swatinem/rust-cache@v2` | `target/`, `~/.cargo/` | 10x |
+| GitHub Actions cache | Same, manual config | 5-8x |
+
+**Best Practice**: Use `swatinem/rust-cache@v2`—it handles Cargo.lock hashing and cache invalidation automatically.
+
+### 12.7 Pre-Commit Hooks (Optional)
+
+For stricter local enforcement, add a pre-commit hook:
+
+**File**: `.githooks/pre-commit`
+```bash
+#!/bin/bash
+set -e
+
+echo "Running pre-commit checks..."
+
+# Format check
+cargo fmt --all -- --check
+
+# Clippy
+cargo clippy --all-targets -- -D warnings
+
+# Quick unit tests
+cargo test --lib
+
+echo "All checks passed!"
+```
+
+**Setup**:
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
+```
+
+### 12.8 Implementation Checklist
+
+| Task | Priority | Status |
+|------|----------|--------|
+| Create `.github/workflows/quick-check.yml` | P0 | Pending |
+| Add `swatinem/rust-cache@v2` | P0 | Pending |
+| Create `.github/workflows/full-audit.yml` | P1 | Pending |
+| Add `#[ignore]` to live tests | P1 | Pending |
+| Setup pre-commit hooks (optional) | P2 | Pending |
+
+### 12.9 Why CI Matters for Trading Systems
+
+1. **Safety Net**: As you modify strategy logic (gas costs, fill probability), CI catches if you accidentally break the live trading engine
+2. **Prevents Drift**: Without CI, research tool changes can diverge from production code
+3. **Refactoring Confidence**: With green CI, you can refactor aggressively without fear
+4. **Documentation**: CI config is executable documentation of your quality standards
+
+---
+
+## 13. New Session Prompt
 
 Copy and paste the following block to start a new implementation session:
 

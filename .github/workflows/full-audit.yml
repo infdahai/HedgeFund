@@ -1,0 +1,141 @@
+name: Full Audit
+
+# Trigger: Nightly runs + Manual + Release tags + Main branch push
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_integration_tests:
+        description: 'Run integration tests (requires secrets)'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  full-test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        # Test across stable and beta Rust versions
+        rust: [stable, beta]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      # Cache for faster builds
+      - name: Cache Cargo Dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (All Targets)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build All Targets
+        run: cargo build --all-targets --all-features
+
+      - name: Run All Tests (Unit Only - No Network)
+        run: cargo test --lib
+
+      - name: Build Release Binary
+        if: matrix.rust == 'stable'
+        run: cargo build --release
+
+      - name: Integration Tests (With Secrets)
+        if: |
+          matrix.rust == 'stable' &&
+          (github.event.inputs.run_integration_tests == 'true' || contains(github.event.head_commit.message, '[ci-integration]'))
+        env:
+          OPINION_API_KEY: ${{ secrets.OPINION_API_KEY }}
+          OPINION_REST_URL: ${{ secrets.OPINION_REST_URL }}
+          OPINION_WS_URL: ${{ secrets.OPINION_WS_URL }}
+          OPINION_PRIVATE_KEY: ${{ secrets.OPINION_PRIVATE_KEY }}
+          OPINION_EOA_ADDRESS: ${{ secrets.OPINION_EOA_ADDRESS }}
+          BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
+        run: |
+          echo "Running integration tests with secrets..."
+          cargo test --tests -- --ignored
+
+      - name: Upload Release Artifacts
+        if: |
+          matrix.rust == 'stable' &&
+          startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: opinion-hft-${{ matrix.rust }}
+          path: target/release/opinion-hft
+          retention-days: 90
+
+  security-scan:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Audit Dependencies (cargo-audit)
+        run: |
+          cargo install cargo-audit
+          cargo audit
+
+      - name: Check for Outdated Dependencies
+        run: |
+          cargo install cargo-outdated
+          cargo outdated --exit-code 1 || true
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Generate Coverage Report
+        run: |
+          cargo install cargo-tarpaulin
+          cargo tarpaulin --out Xml --output-dir ./coverage
+
+      - name: Upload Coverage to Codecov
+        if: github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/cobertura.xml
+          fail_ci_if_error: false

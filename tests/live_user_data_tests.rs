@@ -17,6 +17,8 @@ async fn setup() -> (OpinionClient, Config) {
     (client, config)
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_get_my_positions() {
     let (client, _) = setup().await;
@@ -48,6 +50,8 @@ async fn test_get_my_positions() {
     }
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_get_my_balances() {
     let (client, _) = setup().await;
@@ -72,6 +76,8 @@ async fn test_get_my_balances() {
         }
     }
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_get_my_trades() {

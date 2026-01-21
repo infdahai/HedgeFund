@@ -82,6 +82,8 @@ impl PlaceOrderRequest {
     }
 }
 
+#[ignore]
+
 #[tokio::test]
 
 async fn test_complete_order_workflow() -> anyhow::Result<()> {
@@ -261,6 +263,8 @@ async fn test_complete_order_workflow() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[ignore]
 
 #[tokio::test]
 

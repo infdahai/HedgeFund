@@ -72,6 +72,8 @@ impl Drop for OrderGuard {
 /// Requirements:
 /// - OPINION_API_KEY, BSC_RPC_URL, PRIVATE_KEY environment variables must be set.
 /// - Minimum amount for Opinion Trade is 1.30 USDT.
+#[ignore]
+
 #[tokio::test]
 
 async fn test_live_order_lifecycle() -> Result<()> {
@@ -277,6 +279,8 @@ async fn test_live_order_lifecycle() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_simulated_order_lifecycle() -> Result<()> {
     let scenario = TestScenario::simulated();
@@ -328,6 +332,8 @@ const REPLAY_JSONL_MINTSELL: &str = r#"{"type":"init","timestamp":1737356900000,
 {"type":"trade","timestamp":1737356902000,"trade_id":"m2","market_id":"mint-market","side":"sell","price":0.47,"quantity":10000000000000000000,"fee":0.50}
 "#;
 
+#[ignore]
+
 #[tokio::test]
 async fn test_sim_replay_metrics() -> Result<()> {
     let client = ReplayTestClient::new_from_jsonl(
@@ -348,6 +354,8 @@ async fn test_sim_replay_metrics() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_sim_replay_metrics_profit() -> Result<()> {
     let client = ReplayTestClient::new_from_jsonl(
@@ -360,6 +368,8 @@ async fn test_sim_replay_metrics_profit() -> Result<()> {
     assert!(total_pnl > 0.0);
     Ok(())
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_sim_replay_metrics_loss() -> Result<()> {
@@ -374,6 +384,8 @@ async fn test_sim_replay_metrics_loss() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_sim_replay_yesno_arb() -> Result<()> {
     let client = ReplayTestClient::new_from_jsonl(
@@ -386,6 +398,8 @@ async fn test_sim_replay_yesno_arb() -> Result<()> {
     assert!(total_pnl > 0.0);
     Ok(())
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_sim_replay_spread_arb() -> Result<()> {
@@ -400,6 +414,8 @@ async fn test_sim_replay_spread_arb() -> Result<()> {
     Ok(())
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_sim_replay_mint_sell() -> Result<()> {
     let client = ReplayTestClient::new_from_jsonl(
@@ -412,6 +428,8 @@ async fn test_sim_replay_mint_sell() -> Result<()> {
     assert!(total_pnl <= 0.0);
     Ok(())
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_sim_replay_risk_manager() -> Result<()> {

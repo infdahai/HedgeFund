@@ -1,0 +1,218 @@
+name: Deploy
+
+# Trigger: Manual deployment approval + Version tags
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment Environment'
+        required: true
+        type: choice
+        options:
+          - production
+          - staging
+      version:
+        description: 'Version tag to deploy'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Release Binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      binary_name: ${{ steps.get_version.outputs.binary_name }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Get Version
+        id: get_version
+        run: |
+          if [ "${{ github.event.inputs.version }}" != "" ]; then
+            VERSION=${{ github.event.inputs.version }}
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "binary_name=opinion-hft" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build Release Binary (Optimized)
+        run: |
+          # Strip symbols to reduce binary size
+          cargo build --release
+          strip target/release/opinion-hft
+
+      - name: Run Smoke Tests
+        run: |
+          ./target/release/opinion-hft --version || exit 1
+          ./target/release/opinion-hft --help || exit 1
+
+      - name: Generate Checksum
+        run: |
+          cd target/release
+          sha256sum opinion-hft > opinion-hft.sha256
+          cd ../..
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ steps.get_version.outputs.version }}
+          path: |
+            target/release/opinion-hft
+            target/release/opinion-hft.sha256
+          retention-days: 30
+
+  deploy-aws:
+    name: Deploy to AWS Tokyo
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.inputs.environment == 'production' || startsWith(github.ref, 'refs/tags/v')
+
+    environment:
+      name: production
+      url: http://opinion-hft.internal.example.com
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ needs.build.outputs.version }}
+
+      - name: Verify Checksum
+        run: |
+          echo "Verifying binary integrity..."
+          sha256sum -c opinion-hft.sha256 || exit 1
+
+      - name: Create Deployment Package
+        run: |
+          tar -czf deploy.tar.gz \
+            opinion-hft \
+            .env.production \
+            config.toml \
+            scripts/deploy.sh \
+            scripts/healthcheck.sh
+
+      - name: Copy to S3
+        run: |
+          aws s3 cp deploy.tar.gz \
+            s3://${{ secrets.AWS_S3_BUCKET }}/deployments/${{ needs.build.outputs.version }}.tar.gz \
+            --metadata version=${{ needs.build.outputs.version }}
+
+      - name: Deploy via AWS CodeDeploy
+        env:
+          APPLICATION_NAME: ${{ secrets.AWS_CODEDEPLOY_APP }}
+          DEPLOYMENT_GROUP: ${{ secrets.AWS_CODEDEPLOY_GROUP }}
+        run: |
+          aws deploy create-deployment \
+            --application-name $APPLICATION_NAME \
+            --deployment-group-name $DEPLOYMENT_GROUP \
+            --s3-location bucket=${{ secrets.AWS_S3_BUCKET }},bundleType=tgz,key=deployments/${{ needs.build.outputs.version }}.tar.gz \
+            --description "Deploy version ${{ needs.build.outputs.version }}"
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed! Initiating rollback..."
+          aws deploy create-deployment \
+            --application-name $APPLICATION_NAME \
+            --deployment-group-name $DEPLOYMENT_GROUP \
+            --deployment-config-name CodeDeployDefault.OneAtATime \
+            --description "Rollback after failed deployment of ${{ needs.build.outputs.version }}"
+
+  deploy-docker:
+    name: Build and Push Docker Image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.inputs.environment == 'production' || startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Download Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ needs.build.outputs.version }}
+
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/opinion-hft:${{ needs.build.outputs.version }} \
+            -t ${{ secrets.DOCKER_USERNAME }}/opinion-hft:latest \
+            --build-arg VERSION=${{ needs.build.outputs.version }} \
+            --file Dockerfile .
+
+      - name: Push Docker Images
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/opinion-hft:${{ needs.build.outputs.version }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/opinion-hft:latest
+
+  notify:
+    name: Notify Deployment Status
+    needs: [deploy-aws, deploy-docker]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Send to Slack on Success
+        if: needs.deploy-aws.result == 'success' && needs.deploy-docker.result == 'success'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            ✅ Deployment Successful
+            Version: ${{ needs.build.outputs.version }}
+            Environment: Production
+            URL: http://opinion-hft.internal.example.com
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+      - name: Send to Slack on Failure
+        if: needs.deploy-aws.result == 'failure' || needs.deploy-docker.result == 'failure'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 Deployment Failed
+            Version: ${{ needs.build.outputs.version }}
+            Environment: Production
+            AWS Deploy: ${{ needs.deploy-aws.result }}
+            Docker Deploy: ${{ needs.deploy-docker.result }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

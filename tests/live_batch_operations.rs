@@ -22,6 +22,8 @@ async fn setup() -> (OpinionClient, Config) {
     (client, config)
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_place_orders_batch() {
     let (client, config) = setup().await;
@@ -144,6 +146,8 @@ async fn test_place_orders_batch() {
         }
     }
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_cancel_all_orders() {

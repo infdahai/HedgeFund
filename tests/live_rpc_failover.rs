@@ -40,6 +40,8 @@ fn create_config_primary_only() -> ChainConfig {
     }
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_primary_rpc_healthy() {
     // Test that primary RPC works when healthy
@@ -62,6 +64,8 @@ async fn test_primary_rpc_healthy() {
     );
 }
 
+#[ignore]
+
 #[tokio::test]
 async fn test_fallback_on_primary_failure() {
     // Test that fallback is used when primary fails
@@ -82,6 +86,8 @@ async fn test_fallback_on_primary_failure() {
         result.err()
     );
 }
+
+#[ignore]
 
 #[tokio::test]
 async fn test_batch_query() {

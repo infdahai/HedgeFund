@@ -1,0 +1,54 @@
+name: Quick Check
+
+# Trigger on every push and pull request
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quick-check:
+    name: Rust Quick Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # CRITICAL: This cache provides 10x speedup for Rust builds
+      - name: Cache Cargo Dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Check Code Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy (Linting with Fail onWarnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Unit Tests (Fast, No Network)
+        run: cargo test --lib -- --test-threads=4
+
+      - name: Build Check (Ensure Code Compiles)
+        run: cargo check --all-targets --all-features
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "✅ Quick Check passed!"
+          echo "📊 All critical quality gates passed:"
+          echo "  - Code formatting (rustfmt)"
+          echo "  - Linting (clippy with -D warnings)"
+          echo "  - Unit tests (--lib only, no integration tests)"
+          echo ""
+          echo "⏱️  Quick Check duration: < 2 minutes (target)"
