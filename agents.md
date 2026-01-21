@@ -7,7 +7,7 @@ High-frequency trading bot for Opinion.trade prediction markets on BNB Chain (56
 ```bash
 cargo fmt --all          # Format code (required)
 cargo fmt --all --check  # Verify formatting (CI-style)
-cargo clippy --all -D warnings # Strict linting (0 warnings required)
+cargo clippy --all -- -D warnings # Strict linting (0 warnings required)
 cargo test --lib         # Run 69 unit tests (no API required)
 cargo test --tests       # Run ALL live integration tests (requires .env)
 cargo test --test <name> # Run specific test file (e.g., live_account_tests)
@@ -185,7 +185,7 @@ cargo fmt --all --check
 #### 4.2. Linting (Required - Zero Warning Policy)
 Clippy must be run with all warnings treated as errors. **Submissions with any clippy warnings will be rejected.**
 ```bash
-cargo clippy --all -D warnings
+cargo clippy --all -- -D warnings
 ```
 
 #### 4.3. Submission Gate (Strict)
@@ -197,7 +197,7 @@ cargo clippy --all -D warnings
    ```
 2. **Lint** (zero warnings):
    ```bash
-   cargo clippy --all -D warnings
+   cargo clippy --all -- -D warnings
    ```
 3. **Core tests** (must pass):
    ```bash
@@ -209,7 +209,7 @@ If any step fails, fix and re-run from step 1.
 #### 4.4. Pre-Submission Checklist
 Perform these checks immediately before final submission:
 - [ ] **Formatting**: `cargo fmt --all` then `cargo fmt --all --check`
-- [ ] **Linting**: `cargo clippy --all -D warnings` (0 warnings)
+- [ ] **Linting**: `cargo clippy --all -- -D warnings` (0 warnings)
 - [ ] **Tests**: `cargo test --lib`
 - [ ] **Documentation**: All new public types/functions have `///` comments
 - [ ] **Proof**: Include fmt/clippy/test results in PR description (or paste logs in task update)
@@ -218,7 +218,7 @@ Perform these checks immediately before final submission:
 
 **GitHub Actions / Automation Tools**:
 - Automation tools run `cargo fmt --all --check` to verify formatting.
-- CI runs `cargo clippy --all -D warnings` and blocks PRs with any warnings.
+- CI runs `cargo clippy --all -- -D warnings` and blocks PRs with any warnings.
 
 #### 4.6. Local Guardrails (Required)
 Set up local hooks or scripts so formatting/linting cannot be skipped.
@@ -227,7 +227,7 @@ Set up local hooks or scripts so formatting/linting cannot be skipped.
 ```bash
 cargo fmt --all
 cargo fmt --all --check
-cargo clippy --all -D warnings
+cargo clippy --all -- -D warnings
 ```
 
 **Strict rule**: If hooks are unavailable, manually run the exact commands above before every commit.

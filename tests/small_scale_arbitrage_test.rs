@@ -122,6 +122,7 @@ async fn fetch_market_with_orderbook(
             market_type: market.market_type,
             root_market_id: None,
             parent_title: None,
+            resolution_ts: market.resolved_at.or(market.cutoff_at),
         };
 
         let yes_orderbook = convert_orderbook(&yes_pair, yes_ob);

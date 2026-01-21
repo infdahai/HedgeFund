@@ -15,7 +15,7 @@ jobs:
   quick-check:
     name: Rust Quick Check
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout Code

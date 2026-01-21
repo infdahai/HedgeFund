@@ -26,6 +26,7 @@ mod tests {
             market_type: None,
             root_market_id: None,
             parent_title: None,
+            resolution_ts: None,
         }
     }
 

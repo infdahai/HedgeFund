@@ -175,6 +175,7 @@ impl MarketScanner {
                     market_type: parent.market_type,
                     root_market_id: parent_id.clone(),
                     parent_title: parent_title.clone(),
+                    resolution_ts: None,
                 });
             }
 
@@ -240,6 +241,7 @@ impl MarketScanner {
                     market_type: child.market_type.or(parent.market_type),
                     root_market_id: child_parent_id,
                     parent_title: parent_title.clone(),
+                    resolution_ts: None,
                 });
             }
         }
@@ -359,6 +361,7 @@ impl MarketScanner {
         let volume_24h = parse_volume(&m.volume24h)
             .or_else(|| parse_volume(&m.volume))
             .unwrap_or(0.0);
+        let resolution_ts = m.resolved_at.or(m.cutoff_at);
 
         MarketInfo {
             id: id.clone(),
@@ -373,6 +376,7 @@ impl MarketScanner {
             market_type: m.market_type,
             root_market_id: None,
             parent_title: None,
+            resolution_ts,
         }
     }
 

@@ -30,6 +30,9 @@ pub mod strategy;
 pub mod telemetry;
 pub mod types;
 
+#[cfg(feature = "polars")]
+pub mod research;
+
 pub use config::Config;
 pub use config::ConfigBuilder;
 pub use config::ConfirmationMode;

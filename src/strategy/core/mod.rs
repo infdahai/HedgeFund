@@ -18,11 +18,33 @@ pub struct MarketInfo {
     pub market_type: Option<i32>,
     pub root_market_id: Option<String>,
     pub parent_title: Option<String>,
+    #[serde(default)]
+    pub resolution_ts: Option<i64>,
 }
 
 impl MarketInfo {
     pub fn is_categorical(&self) -> bool {
         matches!(self.market_type, Some(1))
+    }
+
+    /// Returns normalized resolution timestamp in microseconds, if available.
+    pub fn resolution_ts_us(&self) -> Option<i64> {
+        self.resolution_ts
+            .map(normalize_epoch_us)
+            .filter(|ts| *ts > 0)
+    }
+}
+
+fn normalize_epoch_us(ts: i64) -> i64 {
+    if ts <= 0 {
+        return 0;
+    }
+    if ts > 1_000_000_000_000_000 {
+        ts
+    } else if ts > 1_000_000_000_000 {
+        ts.saturating_mul(1_000)
+    } else {
+        ts.saturating_mul(1_000_000)
     }
 }
 

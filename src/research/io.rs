@@ -1,0 +1,289 @@
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+use anyhow::{anyhow, Context, Result};
+use glob::glob;
+use polars::prelude::*;
+use rusqlite::Connection;
+use tracing::warn;
+
+use super::config::CliConfig;
+use super::types::{ConfirmedOrderRecord, MarketTick, SnapshotRow, TickBook};
+
+pub(crate) fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
+    let mut frames = Vec::new();
+    let mut skipped = 0usize;
+    let mut not_ready = 0usize;
+
+    for entry in glob(&config.input).context("invalid glob pattern")? {
+        let path = entry.context("invalid glob entry")?;
+        if !partition_ready(&path) {
+            not_ready += 1;
+            continue;
+        }
+        let mut lf = match LazyFrame::scan_parquet(&path, Default::default()) {
+            Ok(frame) => frame,
+            Err(err) => {
+                skipped += 1;
+                warn!("skip corrupt parquet file", path = ?path, error = %err);
+                continue;
+            }
+        };
+
+        if let Some(ref market_id) = config.market_id {
+            lf = lf.filter(col("market_id").eq(lit(market_id.as_str())));
+        }
+        frames.push(lf);
+    }
+
+    if frames.is_empty() {
+        return Err(anyhow!(
+            "no valid parquet files found (skipped={}, not_ready={})",
+            skipped,
+            not_ready
+        ));
+    }
+
+    if skipped > 0 {
+        warn!("parquet files skipped", skipped = skipped);
+    }
+    if not_ready > 0 {
+        warn!("parquet partitions not ready", skipped = not_ready);
+    }
+
+    let df = concat(frames, UnionArgs::default())?
+        .with_streaming(true)
+        .collect()?;
+    Ok(df)
+}
+
+pub(crate) fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
+    let market_ids = df
+        .column("market_id")
+        .context("missing market_id")?
+        .str()
+        .context("invalid market_id type")?;
+    let local_recv = df
+        .column("local_recv_ts_us")
+        .ok()
+        .and_then(|col| col.i64().ok());
+    let snapshot_ts = df.column("snapshot_ts").ok().and_then(|col| col.i64().ok());
+    if local_recv.is_none() && snapshot_ts.is_none() {
+        return Err(anyhow!(
+            "missing timestamp column (expected local_recv_ts_us or snapshot_ts)"
+        ));
+    }
+    let best_bid = df.column("best_bid").ok().and_then(|col| col.f64().ok());
+    let best_ask = df.column("best_ask").ok().and_then(|col| col.f64().ok());
+    let bid_size = df.column("bid_size").ok().and_then(|col| col.f64().ok());
+    let ask_size = df.column("ask_size").ok().and_then(|col| col.f64().ok());
+    let bids = df.column("bids").ok();
+    let asks = df.column("asks").ok();
+    let outcomes = df.column("outcome").ok().and_then(|col| col.str().ok());
+    let pairs = df.column("pair").ok().and_then(|col| col.str().ok());
+
+    let mut rows = Vec::with_capacity(df.height());
+    for idx in 0..df.height() {
+        let market_id = match market_ids.get(idx) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
+        let ts_us = if let Some(col) = &local_recv {
+            match col.get(idx) {
+                Some(value) => value,
+                None => continue,
+            }
+        } else if let Some(col) = &snapshot_ts {
+            match col.get(idx) {
+                Some(value) => value.saturating_mul(1000),
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        let (best_bid, bid_size) = if let Some(col) = &best_bid {
+            let price = match col.get(idx) {
+                Some(value) => value,
+                None => continue,
+            };
+            let size = bid_size
+                .as_ref()
+                .and_then(|sizes| sizes.get(idx))
+                .unwrap_or(0.0);
+            (price, size)
+        } else if let Some(col) = &bids {
+            match extract_top_from_list_series(col, idx) {
+                Some(value) => value,
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        let (best_ask, ask_size) = if let Some(col) = &best_ask {
+            let price = match col.get(idx) {
+                Some(value) => value,
+                None => continue,
+            };
+            let size = ask_size
+                .as_ref()
+                .and_then(|sizes| sizes.get(idx))
+                .unwrap_or(0.0);
+            (price, size)
+        } else if let Some(col) = &asks {
+            match extract_top_from_list_series(col, idx) {
+                Some(value) => value,
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        let outcome = outcomes
+            .and_then(|col| col.get(idx).map(|value| value.to_string()))
+            .or_else(|| {
+                pairs
+                    .and_then(|col| col.get(idx).map(|value| value.to_string()))
+                    .and_then(derive_outcome)
+            })
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        let outcome_upper = outcome.to_uppercase();
+        if outcome_upper != "YES" && outcome_upper != "NO" {
+            continue;
+        }
+
+        if best_bid <= 0.0 || best_ask <= 0.0 {
+            continue;
+        }
+
+        rows.push(SnapshotRow {
+            market_id,
+            outcome: outcome_upper,
+            ts_us,
+            best_bid: round_price(best_bid),
+            best_ask: round_price(best_ask),
+            bid_size,
+            ask_size,
+        });
+    }
+
+    Ok(rows)
+}
+
+pub(crate) fn build_market_ticks(rows: Vec<SnapshotRow>) -> HashMap<String, Vec<MarketTick>> {
+    let mut markets: HashMap<String, BTreeMap<i64, TickAccumulator>> = HashMap::new();
+
+    for row in rows {
+        let tick = markets
+            .entry(row.market_id.clone())
+            .or_default()
+            .entry(row.ts_us)
+            .or_default();
+
+        let book = TickBook {
+            best_bid: row.best_bid,
+            best_ask: row.best_ask,
+            bid_size: row.bid_size,
+            ask_size: row.ask_size,
+        };
+
+        if row.outcome == "YES" {
+            tick.yes = Some(book);
+        } else {
+            tick.no = Some(book);
+        }
+    }
+
+    let mut result = HashMap::new();
+    for (market_id, map) in markets {
+        let mut ticks = Vec::new();
+        for (ts, acc) in map {
+            if let (Some(yes), Some(no)) = (acc.yes, acc.no) {
+                ticks.push(MarketTick { ts_us: ts, yes, no });
+            }
+        }
+        result.insert(market_id, ticks);
+    }
+
+    result
+}
+
+pub(crate) fn load_confirmed_orders(db_path: Option<&str>) -> Result<Vec<ConfirmedOrderRecord>> {
+    let Some(path) = db_path else {
+        return Ok(Vec::new());
+    };
+
+    let conn = Connection::open(path).with_context(|| format!("open confirmed db {path}"))?;
+    let mut stmt = conn.prepare(
+        "SELECT market_id, side, expected_price, actual_fill, confirmation_time_ms, timestamp_ms
+         FROM confirmed_orders",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let market_id: String = row.get(0)?;
+        let side: String = row.get(1)?;
+        let expected_price: f64 = row.get(2)?;
+        let actual_fill: String = row.get(3)?;
+        let confirmation_time_ms: u64 = row.get(4)?;
+        let timestamp_ms: i64 = row.get(5)?;
+        Ok(ConfirmedOrderRecord {
+            market_id,
+            side,
+            expected_price,
+            actual_fill,
+            confirmation_time_ms,
+            timestamp_ms,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+#[derive(Default)]
+struct TickAccumulator {
+    yes: Option<TickBook>,
+    no: Option<TickBook>,
+}
+
+fn partition_ready(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let success = parent.join("_SUCCESS");
+    success.exists()
+}
+
+fn derive_outcome(pair: String) -> Option<String> {
+    let upper = pair.to_uppercase();
+    if upper.ends_with("-YES") {
+        Some("YES".to_string())
+    } else if upper.ends_with("-NO") {
+        Some("NO".to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_top_from_list_series(column: &Column, idx: usize) -> Option<(f64, f64)> {
+    let series = column.as_materialized_series();
+    let list = series.list().ok()?;
+    let entry = list.get_as_series(idx)?;
+    if entry.is_empty() {
+        return None;
+    }
+    let struct_series = entry.struct_().ok()?;
+    let price_field = struct_series.field_by_name("p").ok()?;
+    let price_series = price_field.f64().ok()?;
+    let size_field = struct_series.field_by_name("s").ok()?;
+    let size_series = size_field.f64().ok()?;
+    Some((price_series.get(0)?, size_series.get(0)?))
+}
+
+fn round_price(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
