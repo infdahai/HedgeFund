@@ -982,20 +982,9 @@ Maintains an in-memory snapshot of orderbooks from WebSocket `market.depth.diff`
 
 #### 5.9.3 Strategy Diagnostics
 
-**Purpose:** Explain why no opportunities are detected in live scans.
-
-**Mechanism:**
-- `ArbScanStats` tracks skip reasons per strategy (missing book, cost >= 1.0, low liquidity, below min notional, below min profit).
-- The scan loop logs a per-cycle summary (markets scanned, orderbook errors, opportunities found).
-- Use `RUST_LOG=debug` for detailed decision stats alongside the scan summary.
-
-**Analysis Framework (Systematic Debugging):**
-1. **Data Quality**: statusEnum correctness, missing token IDs, stale orderbooks, parse errors.
-2. **Coverage**: pagination completeness, scan duration vs interval, API rate limiter saturation.
-3. **Pricing & Fees**: 1-decimal tick size, min fee floor, min notional per leg, taker fee curve.
-4. **Opportunity Math**: binary sum < 1.0 or > 1.0, categorical sum < 1.0, net profit after fees.
-5. **Execution & Risk**: pre-trade validation, slippage buffer, confirmation latency.
-6. **Observability**: per-cycle summaries + skip reason counts to pinpoint bottlenecks.
+Runtime diagnostics are captured via `ArbScanStats` and scan-cycle summaries. The detailed
+diagnostics framework and `scan_stats` dataset are specified in Section 11.2 (Stage A) to keep
+the authoritative spec in one place.
 
 **One-off Market Sweep (metadata reconnaissance):**
 - Binary: `src/bin/market_sweep.rs`
@@ -1057,19 +1046,8 @@ See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
 
 ### 5.9.6 Replay Engine (Offline)
 
-**Purpose:** Validate strategy metrics and risk manager behavior using JSONL replay data without live API dependency.
-
-**Core Types:**
-- `ReplayTestClient` (JSONL playback)
-- `ReplayEvent` (`init`, `trade`)
-- `ReplayTrade` (price, quantity, fee)
-
-**Usage Pattern:**
-- Load JSONL via `ReplayTestClient::new_from_jsonl`
-- Execute replay events to compute P&L, win rate, drawdown
-
-**Tests:**
-- `tests/live_order_tests.rs`: `test_sim_replay_metrics`, `test_sim_replay_metrics_profit`, `test_sim_replay_metrics_loss`, `test_sim_replay_risk_manager`
+See Section 11.1 (Phase 2) for ReplayTestClient usage and tests; the full research loop is in
+Section 11.2.
 
 ### 5.10 Telemetry Module (`src/telemetry.rs`)
 
@@ -1752,6 +1730,22 @@ Phase 2: Backtest & Live Iteration
 Replay from SQLite snapshots (or export to JSONL if needed) using ReplayTestClient.
 Promote best-performing configs to `config.toml` and iterate.
 
+Replay Engine (Offline)
+
+**Purpose:** Validate strategy metrics and risk manager behavior using JSONL replay data without live API dependency.
+
+**Core Types:**
+- `ReplayTestClient` (JSONL playback)
+- `ReplayEvent` (`init`, `trade`)
+- `ReplayTrade` (price, quantity, fee)
+
+**Usage Pattern:**
+- Load JSONL via `ReplayTestClient::new_from_jsonl`
+- Execute replay events to compute P&L, win rate, drawdown
+
+**Tests:**
+- `tests/live_order_tests.rs`: `test_sim_replay_metrics`, `test_sim_replay_metrics_profit`, `test_sim_replay_metrics_loss`, `test_sim_replay_risk_manager`
+
 Opinion Trade-specific strategy additions
 
 Mint-Sell arbitrage: execute when sum(bids) > 1.0 after fees.
@@ -1810,6 +1804,23 @@ Data contracts (Parquet datasets):
   - `mint_sell_low_liquidity`/`mint_sell_below_min_notional`/`mint_sell_below_min_profit`
   - `neg_risk_checked`/`neg_risk_found`/`neg_risk_missing_ask`/`neg_risk_cost_ge_one`
   - `neg_risk_low_liquidity`/`neg_risk_below_min_notional`/`neg_risk_below_min_profit`
+
+Strategy Diagnostics (Scan Stats + Live Logs)
+
+**Purpose:** Explain why no opportunities are detected in live scans.
+
+**Mechanism:**
+- `ArbScanStats` tracks skip reasons per strategy (missing book, cost >= 1.0, low liquidity, below min notional, below min profit).
+- The scan loop logs a per-cycle summary (markets scanned, orderbook errors, opportunities found).
+- Use `RUST_LOG=debug` for detailed decision stats alongside the scan summary.
+
+**Analysis Framework (Systematic Debugging):**
+1. **Data Quality**: statusEnum correctness, missing token IDs, stale orderbooks, parse errors.
+2. **Coverage**: pagination completeness, scan duration vs interval, API rate limiter saturation.
+3. **Pricing & Fees**: 1-decimal tick size, min fee floor, min notional per leg, taker fee curve.
+4. **Opportunity Math**: binary sum < 1.0 or > 1.0, categorical sum < 1.0, net profit after fees.
+5. **Execution & Risk**: pre-trade validation, slippage buffer, confirmation latency.
+6. **Observability**: per-cycle summaries + skip reason counts to pinpoint bottlenecks.
 
 MVP success criteria:
 - Parquet files produced without blocking the scan loop.
@@ -2915,53 +2926,17 @@ Copy and paste the following block to start a new implementation session:
 > 
 > ## Critical Parameters (MUST USE EXACTLY)
 > 
-> 
-> * **EIP-712 Domain Name**: `"OPINION CTF Exchange"` (note the SPACE!)
-> * **EIP-712 Version**: `"1"`
-> * **Chain ID**: `56` (BNB Chain)
-> * **ConditionalTokens Address**: `0xAD1a38cEc043e70E83a3eC30443dB285ED10D774`
-> * **REST API Base**: `https://proxy.opinion.trade:8443/openapi/`
-> * **WebSocket**: `wss://ws.opinion.trade`
-> * **API Key**: Query parameter (NOT header!) `?apikey={KEY}`
-> * **Rate Limit**: 15 TPS
-> * **Price Precision**: 1 decimal (0.1 - 0.9)
+> See Section 3 (Critical Constraints & Parameters) and Section 6 (API Compatibility Design).
 > 
 > 
 > ## Critical Design Decision
 > 
-> 
-> **Order Confirmation**:
-> * ⚠️ DO NOT trust WebSocket quantity data (Shares, FilledShares are UNRELIABLE)
-> * ✅ Only use WebSocket `status = "Finish"` as trigger
-> * ✅ Query on-chain `balanceOf()` for actual fill amounts
-> * On-chain confirmation takes 3-5 seconds (unavoidable)
+> See Section 4.2 (Order Confirmation Flow).
 > 
 > 
 > ## Implementation Order
 > 
-> 
-> **Phase 1: Foundation**
-> * types/order.rs, types/market.rs
-> * error.rs, config.rs
-> * auth/eip712.rs + tests
-> 
-> 
-> **Phase 2: Core Execution**
-> * execution/rate_limiter.rs + tests (Governor GCRA, 15 TPS)
-> * execution/priority_queue.rs + tests
-> * chain/conditional_tokens.rs + tests
-> 
-> 
-> **Phase 3: External Communication**
-> * data/rest/client.rs + tests
-> * data/websocket/client.rs + tests
-> * chain/client.rs + tests
-> 
-> 
-> **Phase 4: Integration**
-> * execution/confirmation.rs + tests
-> * execution/gateway.rs + tests
-> * Integration tests
+> See Section 11 (Implementation Order).
 > 
 > 
 > ## Start Implementation

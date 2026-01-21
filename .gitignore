@@ -3,6 +3,7 @@
 # ==============================================================================
 /target/
 /debug/
+artifacts/
 
 # Cargo.lock is intentionally tracked for binary applications to ensure reproducible builds.
 # Do not uncomment the line below unless this is a library.
