@@ -252,6 +252,8 @@ impl ConfirmationTracker {
         // 3. Batch query
         let positions = self.chain_client.balance_of_batch(&token_ids).await?;
 
+        let block_number = self.chain_client.get_block_number().await.ok();
+
         // 4. Process results
         let mut confirmed_orders = Vec::new();
 
@@ -268,8 +270,6 @@ impl ConfirmationTracker {
                                 pending.position_before.saturating_sub(position_after)
                             }
                         };
-
-                        let block_number = self.chain_client.get_block_number().await.ok();
 
                         let confirmed = ConfirmedOrder {
                             order_id: pending.order_id,
