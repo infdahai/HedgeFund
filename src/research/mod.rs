@@ -1,6 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use chrono::{TimeZone, Utc};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use tracing::info;
 
 use crate::strategy::arbitrage::ArbitrageConfig;
 use crate::telemetry;
@@ -11,6 +13,7 @@ mod metadata;
 mod microstructure;
 mod report;
 mod sim;
+mod sweep;
 mod types;
 
 pub fn run() -> Result<()> {
@@ -19,21 +22,58 @@ pub fn run() -> Result<()> {
     let df = io::load_snapshots(&config)?;
     let rows = io::rows_from_df(&df)?;
     let markets = io::build_market_ticks(rows);
+    let market_metadata = metadata::load_market_metadata(config.market_metadata.as_deref())?;
+
+    let total_ticks: usize = markets.values().map(|ticks| ticks.len()).sum();
+    let estimated_bytes = total_ticks.saturating_mul(std::mem::size_of::<types::MarketTick>());
 
     match config.mode {
-        config::RunMode::Backtest => run_backtest(&markets, &config),
+        config::RunMode::Backtest => run_backtest(&markets, &market_metadata, &config),
         config::RunMode::Microstructure => run_microstructure(&markets, &config),
-        config::RunMode::Sweep => unimplemented!("Sweep mode not implemented yet"),
+        config::RunMode::Sweep => {
+            info!(
+                total_ticks = total_ticks,
+                estimated_mb = (estimated_bytes as f64) / (1024.0 * 1024.0),
+                "loaded market ticks for sweep"
+            );
+            let results = sweep::run_sweep(&markets, &market_metadata, &config);
+            report::write_sweep_report(&config.output, &results)
+        }
+        config::RunMode::Validate => {
+            info!(
+                total_ticks = total_ticks,
+                estimated_mb = (estimated_bytes as f64) / (1024.0 * 1024.0),
+                "loaded market ticks for validation"
+            );
+            let (train, test) = sweep::split_by_time(&markets, 0.7);
+            let validation_results =
+                sweep::validate_configs(&train, &test, &market_metadata, &config, 3);
+            let best = validation_results
+                .first()
+                .ok_or_else(|| anyhow!("validation produced no results"))?;
+            report::print_validation_report(best);
+
+            let (data_start, data_end) = sweep::data_period(&markets)
+                .map(|(start, end)| (format_date(start), format_date(end)))
+                .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+            report::write_recommended_config(
+                "reports/recommended_config.json",
+                best,
+                &data_start,
+                &data_end,
+            )
+        }
     }
 }
 
 fn run_backtest(
     markets: &HashMap<String, Vec<types::MarketTick>>,
+    market_metadata: &HashMap<String, i64>,
     config: &config::CliConfig,
 ) -> Result<()> {
-    let micro_reports = microstructure::build_microstructure_reports(markets, config);
-    let market_metadata = metadata::load_market_metadata(config.market_metadata.as_deref())?;
-
+    let scan_skip_rate = io::load_scan_skip_rate(config)?.unwrap_or(0.0);
+    let micro_reports =
+        microstructure::build_microstructure_reports(markets, config, scan_skip_rate);
     let arb_config = ArbitrageConfig {
         min_profit_rate: config.min_profit_rate,
         min_liquidity: config.min_liquidity,
@@ -67,13 +107,23 @@ fn run_microstructure(
     markets: &HashMap<String, Vec<types::MarketTick>>,
     config: &config::CliConfig,
 ) -> Result<()> {
-    let reports = microstructure::build_microstructure_reports(markets, config);
-    let output = config.output.replace(".csv", "_microstructure.csv");
-    report::write_microstructure_report(&output, &reports)?;
-    println!(
-        "Wrote {} microstructure reports to {}",
-        reports.len(),
-        output
-    );
+    let scan_skip_rate = io::load_scan_skip_rate(config)?.unwrap_or(0.0);
+    let reports = microstructure::build_microstructure_reports(markets, config, scan_skip_rate);
+    let output = config
+        .output_microstructure
+        .as_deref()
+        .unwrap_or("reports/microstructure.csv");
+    report::write_microstructure_report(output, &reports)?;
+    report::print_microstructure_summary(&reports);
     Ok(())
+}
+
+fn format_date(ts_us: i64) -> String {
+    let secs = ts_us.div_euclid(1_000_000);
+    let micros = ts_us.rem_euclid(1_000_000) as u32;
+    let nanos = micros * 1000;
+    Utc.timestamp_opt(secs, nanos)
+        .single()
+        .map(|value| value.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
