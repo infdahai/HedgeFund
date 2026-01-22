@@ -57,6 +57,91 @@ pub(crate) fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
     Ok(df)
 }
 
+pub(crate) fn load_scan_skip_rate(config: &CliConfig) -> Result<Option<f64>> {
+    let mut frames = Vec::new();
+    let mut skipped = 0usize;
+    let mut not_ready = 0usize;
+
+    for entry in glob(&config.scan_stats_input).context("invalid scan_stats glob pattern")? {
+        let path = entry.context("invalid scan_stats glob entry")?;
+        if !partition_ready(&path) {
+            not_ready += 1;
+            continue;
+        }
+        let lf = match LazyFrame::scan_parquet(&path, Default::default()) {
+            Ok(frame) => frame,
+            Err(err) => {
+                skipped += 1;
+                warn!(
+                    target: "research",
+                    "skip corrupt scan_stats parquet file: {:?}, error: {}",
+                    path,
+                    err
+                );
+                continue;
+            }
+        };
+        frames.push(lf);
+    }
+
+    if frames.is_empty() {
+        warn!(
+            target: "research",
+            "no scan_stats parquet files found for pattern: {}",
+            config.scan_stats_input
+        );
+        if skipped > 0 {
+            warn!(target: "research", "scan_stats parquet files skipped: {}", skipped);
+        }
+        if not_ready > 0 {
+            warn!(
+                target: "research",
+                "scan_stats partitions not ready: {}",
+                not_ready
+            );
+        }
+        return Ok(None);
+    }
+
+    if skipped > 0 {
+        warn!(target: "research", "scan_stats parquet files skipped: {}", skipped);
+    }
+    if not_ready > 0 {
+        warn!(
+            target: "research",
+            "scan_stats partitions not ready: {}",
+            not_ready
+        );
+    }
+
+    let df = concat(frames, UnionArgs::default())?
+        .select([
+            col("yesno_checked").sum().alias("yesno_checked"),
+            col("yesno_found").sum().alias("yesno_found"),
+            col("mint_sell_checked").sum().alias("mint_sell_checked"),
+            col("mint_sell_found").sum().alias("mint_sell_found"),
+            col("neg_risk_checked").sum().alias("neg_risk_checked"),
+            col("neg_risk_found").sum().alias("neg_risk_found"),
+        ])
+        .with_streaming(true)
+        .collect()?;
+
+    let total_checked = sum_u64(&df, "yesno_checked")?
+        + sum_u64(&df, "mint_sell_checked")?
+        + sum_u64(&df, "neg_risk_checked")?;
+    let total_found = sum_u64(&df, "yesno_found")?
+        + sum_u64(&df, "mint_sell_found")?
+        + sum_u64(&df, "neg_risk_found")?;
+
+    if total_checked == 0 {
+        return Ok(Some(0.0));
+    }
+
+    let skipped = total_checked.saturating_sub(total_found);
+    let rate = skipped as f64 / total_checked as f64 * 100.0;
+    Ok(Some(rate))
+}
+
 pub(crate) fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
     let market_ids = df
         .column("market_id")
@@ -256,6 +341,22 @@ fn partition_ready(path: &Path) -> bool {
     };
     let success = parent.join("_SUCCESS");
     success.exists()
+}
+
+fn sum_u64(df: &DataFrame, name: &str) -> Result<u64> {
+    let series = df
+        .column(name)
+        .with_context(|| format!("missing scan_stats column {name}"))?;
+    if let Ok(col) = series.u64() {
+        return Ok(col.get(0).unwrap_or(0));
+    }
+    if let Ok(col) = series.i64() {
+        return Ok(col.get(0).unwrap_or(0).max(0) as u64);
+    }
+    if let Ok(col) = series.f64() {
+        return Ok(col.get(0).unwrap_or(0.0).max(0.0) as u64);
+    }
+    Err(anyhow!("unsupported scan_stats column type: {name}"))
 }
 
 fn derive_outcome(pair: String) -> Option<String> {
