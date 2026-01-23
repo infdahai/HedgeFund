@@ -625,3 +625,200 @@ if let Some(recorder) = &recorder_handle {
 5. **Measure Don't Just Assume**: Always log actual fill amounts, prices, and fees
     - Calculate and report real P&L for each trade
     - Use this data to improve strategy, not just pass/fail tests
+
+---
+
+## Agent Code Submission Workflow
+
+> **CRITICAL**: Always create GitHub PRs. Never merge locally. This protects the main branch and leverages CI as a safety gate.
+
+### Why PR, Not Local Merge?
+
+| Risk of Local Merge | PR Protection |
+|---------------------|---------------|
+| Broken code in main | CI runs BEFORE merge |
+| "Hallucination" code (missing deps) | CI catches build errors |
+| No review opportunity | Clear diff view for human review |
+| Destroys worktree isolation | Main branch stays clean |
+
+### Standard Workflow for Agents
+
+#### 1. Setup GitHub CLI
+
+```bash
+# Install gh (if not present)
+brew install gh  # macOS
+sudo apt install gh  # Ubuntu/Debian
+
+# Login (once per machine)
+gh auth login
+```
+
+#### 2. Submit Code via Worktree
+
+```bash
+# Create isolated worktree for your task (recommended)
+git worktree add -b feature/agent-task-name /path/to/worktree origin/main
+
+# In your worktree directory:
+# ... write code ...
+
+# Run pre-submission checks
+cargo fmt --all
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+
+# Commit your changes
+git add .
+git commit -m "feat: implement feature X"
+
+# Push to remote branch
+git push -u origin feature/agent-task-name
+```
+
+#### 3. Create Pull Request
+
+```bash
+# Create PR (fills title/body from commit message)
+gh pr create --base main --fill
+
+# Optional: Enable auto-merge if CI passes
+gh pr merge --auto --rebase
+```
+
+#### 4. Handle CI Failures
+
+```bash
+# Check CI status
+gh pr checks
+
+# If failed, read logs and fix
+gh run view <run-id> --log | grep -A 5 "error:"
+
+# Fix code, then update PR
+git add .
+git commit -m "fix: resolve CI error"
+git push
+
+# CI automatically re-runs
+```
+
+### CI Safety Gates
+
+The repository has these CI checks (see `.github/workflows/quick-check.yml`):
+
+1. **Format Check**: `cargo fmt --all --check`
+2. **Build Check**: `cargo check --lib --all-features`
+3. **Clippy**: `cargo clippy --lib -- -D warnings`
+4. **Unit Tests**: `cargo test --lib`
+
+**Your code MUST pass all 4 before requesting merge.**
+
+### Forbidden Commands
+
+```bash
+# ❌ NEVER do this
+git merge main
+git checkout main && git merge feature-branch
+git push origin main
+
+# ✅ Always do this
+git push -u origin feature-branch
+gh pr create --base main --fill
+```
+
+### Quick Reference
+
+```bash
+# Full submission sequence
+cd /path/to/worktree
+cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test --lib
+git add -A && git commit -m "type: description"
+git push -u origin feature/branch-name
+gh pr create --base main --fill
+gh pr checks  # Verify CI passes
+```
+
+---
+
+### Branch Protection (Local Hook)
+
+Since this is a private repository without GitHub Pro, we use a **local pre-push hook** to prevent direct main pushes.
+
+**Location**: `.githooks/pre-push`
+
+```bash
+# When you try to push to main directly:
+$ git push origin main
+🚫 DIRECT PUSH TO MAIN BRANCH DENIED
+
+Solution:
+  1. Create a feature branch:
+     git checkout -b feature/your-task-name
+  ...
+```
+
+**Why this matters**:
+- Prevents accidental direct pushes
+- Enforces PR workflow locally
+- Works even without GitHub Pro
+
+**To verify setup**:
+```bash
+git config core.hooksPath .githooks  # If not already configured
+```
+
+---
+
+### Automated PR Status Check Script
+
+Agents can use this script to automatically check and handle CI results:
+
+```bash
+#!/bin/bash
+# pr-check-and-fix.sh - Automated PR CI check with self-fix
+
+BRANCH=$(git branch --show-current)
+echo "Checking PR for branch: $BRANCH"
+
+# Get the PR number for current branch
+PR_NUM=$(gh pr list --head "$BRANCH" --json number -q '.[0].number')
+
+if [[ -z "$PR_NUM" ]]; then
+    echo "❌ No PR found for branch $BRANCH"
+    exit 1
+fi
+
+echo "Found PR #$PR_NUM"
+
+# Check CI status
+STATUS=$(gh pr checks "$PR_NUM" --json status,conclusion -q '.[] | select(.name == "Quick Check") | {status, conclusion}')
+
+if [[ "$STATUS" == *"success"* ]]; then
+    echo "✅ CI passed! PR #$PR_NUM is ready to merge."
+    echo "You can merge with: gh pr merge $PR_NUM --auto --rebase"
+    exit 0
+else
+    echo "❌ CI failed or still running"
+    echo "Status: $STATUS"
+
+    # Show failed jobs
+    echo ""
+    echo "Failed jobs:"
+    gh pr checks "$PR_NUM" --json name,status,conclusion -q '.[] | select(.conclusion != "success") | "- \(.name): \(.status) (\(.conclusion))"'
+
+    echo ""
+    echo "Reading error logs..."
+    RUN_ID=$(gh pr checks "$PR_NUM" --json runId -q '.[0].runId')
+    gh run view "$RUN_ID" --log 2>&1 | grep -A 3 "error:" | head -20
+
+    echo ""
+    echo "Fix the issues above, then:"
+    echo "  git add -A && git commit -m 'fix: resolve CI error'"
+    echo "  git push"
+    echo ""
+    echo "CI will automatically re-run after the push."
+    exit 1
+fi
+```

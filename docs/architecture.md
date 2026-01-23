@@ -28,97 +28,107 @@
 ### System Architecture Diagram
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                            OPINION TRADE HFT FRAMEWORK                           │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                              DATA PLANE                                     │
-│  │                                                                             │
-│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
-│  │   │  WebSocket      │   │   REST Client   │   │    Chain Client         │   │ │
-│  │   │  Client         │   │                 │   │    (Alloy)              │   │ │
-│  │   │                 │   │                 │   │                         │   │ │
-│  │   │ ┌─────────────┐ │   │  /markets       │   │  balanceOf()            │   │ │
-│  │   │ │ market.depth.diff │ │   │  /orderbook     │   │  balanceOfBatch()       │   │ │
-│  │   │ │ order.update│ │   │  /order         │   │                         │   │ │
-│  │   │ │ trade.record│ │   │                 │   │  ConditionalTokens      │   │ │
-│  │   │ └─────────────┘ │   │  ?apikey=XXX    │   │  (ERC-1155)             │   │ │
-│  │   └────────┬────────┘   └────────┬────────┘   └────────────┬────────────┘   │ │
-│  │            │                     │                         │                │ │
-│  │            └─────────────────────┼─────────────────────────┘                │ │
-│  │                                  ▼                                          │ │
-│  │                    ┌─────────────────────────────┐                          │ │
-│  │                    │        Event Bus            │                          │ │
-│  │                    │   (tokio::broadcast)        │                          │ │
-│  │                    └─────────────┬───────────────┘                          │ │
-│  └──────────────────────────────────┼──────────────────────────────────────────┘ │
-│                                     │                                            │
-│                                     ▼                                            │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                            EXECUTION PLANE                                  │
-│  │                                                                             │
-│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
-│  │   │   EIP-712       │   │  Priority Queue │   │    Rate Limiter         │   │ │
-│  │   │   Signer        │   │                 │   │    (Governor GCRA)      │   │ │
-│  │   │                 │   │                 │   │                         │   │ │
-│  │   │  Precomputed:   │   │  Critical ━━━▶ │   │                         │   │ │
-│  │   │  • Domain Sep   │   │  High     ━━━▶ │   │  15 TPS                 │   │ │
-│  │   │  • Type Hash    │   │  Medium   ━━━▶ │   │  Burst: 3               │   │ │
-│  │   │                 │   │  Low      ━━━▶ │   │  ~15ns/check            │   │ │
-│  │   │  k256 ECDSA     │   │  FIFO per level │   │  until_ready().await    │   │ │
-│  │   └─────────────────┘   └────────┬────────┘   └─────────────────────────┘   │ │
-│  │                                  │                                          │ │
-│  │                                  ▼                                          │ │
-│  │             ┌───────────────────────────────────────────────┐               │ │
-│  │             │            Confirmation Tracker               │               │ │
-│  │             │                                               │               │ │
-│  │             │  ┌─────────────────────────────────────────┐  │               │ │
-│  │             │  │  Mode: TrustWebSocket | OnChainOnly |   │  │               │ │
-│  │             │  │       Hybrid (recommended)              │  │               │ │
-│  │             │  └─────────────────────────────────────────┘  │               │ │
-│  │             │                                               │               │ │
-│  │             │  1. Record position_before                    │               │ │
-│  │             │  2. Wait for WS status="Finish"               │               │ │
-│  │             │  3. Query on-chain balanceOf()                │               │ │
-│  │             │  4. Calculate: position_after - position_before│              │ │
-│  │             │  5. Emit ConfirmationEvent                    │               │ │
-│  │             └───────────────────────────────────────────────┘               │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────┘
-
++--------------------------------------------------------------------+
+|                   OPINION TRADE HFT FRAMEWORK                      |
++--------------------------------------------------------------------+
+|                                                                    |
+|  +--------------------------------------------------------------+  |
+|  |                         DATA PLANE                           |  |
+|  |                                                              |  |
+|  |  +-------------+  +-------------+  +----------------------+  |  |
+|  |  |  WebSocket  |  |  REST Cli   |  |    Chain Client      |  |  |
+|  |  |   Client    |  |             |  |    (Alloy)           |  |  |
+|  |  |             |  |             |  |                      |  |  |
+|  |  | market.depth|  |  /markets   |  |   balanceOf()        |  |  |
+|  |  | order.update|  | /orderbook  |  |   balanceOfBatch()   |  |  |
+|  |  | trade.record|  |   /order    |  |                      |  |  |
+|  |  |             |  | ?apikey=XXX |  |   ConditionalTokens  |  |  |
+|  |  +------+------+  +------+------+  +-----------+----------+  |  |
+|  |         |                |                     |             |  |
+|  |         +----------------+---------------------+             |  |
+|  |                          |                                   |  |
+|  |                   +------+-------+                           |  |
+|  |                   |   Event Bus  |                           |  |
+|  |                   | (broadcast)  |                           |  |
+|  |                   +------+-------+                           |  |
+|  +--------------------------+-----------------------------------+  |
+|                             |                                      |
+|                             V                                      |
+|  +--------------------------------------------------------------+  |
+|  |                       EXECUTION PLANE                        |  |
+|  |                                                              |  |
+|  |  +-------------+  +-------------+  +----------------------+  |  |
+|  |  |   EIP-712   |  | Priority Q  |  |     Rate Limiter     |  |  |
+|  |  |    Signer   |  |             |  |   (Governor GCRA)    |  |  |
+|  |  |             |  |             |  |                      |  |  |
+|  |  |  Precomputed|  | Critical -->|  |                      |  |  |
+|  |  |   -Domain   |  | High     -->|  |   15 TPS             |  |  |
+|  |  |   -TypeHash |  | Medium   -->|  |   Burst: 3           |  |  |
+|  |  |   k256 ECDSA|  | Low      -->|  |   ~15ns/check        |  |  |
+|  |  |             |  | FIFO/level  |  |   until_ready()      |  |  |
+|  |  +-------------+  +------+------+  +----------------------+  |  |
+|  |                          |                                   |  |
+|  |                          V                                   |  |
+|  |           +------------------------------+                   |  |
+|  |           |     Confirmation Tracker     |                   |  |
+|  |           |                              |                   |  |
+|  |           |  Mode: TrustWebSocket        |                   |  |
+|  |           |         |OnChainOnly|        |                   |  |
+|  |           |     Hybrid (recommended)     |                   |  |
+|  |           |                              |                   |  |
+|  |           |  1. Record position_before   |                   |  |
+|  |           |  2. Wait WS status="Finish"  |                   |  |
+|  |           |  3. Query on-chain balance   |                   |  |
+|  |           |  4. Calc position delta      |                   |  |
+|  |           |  5. Emit ConfirmationEvent   |                   |  |
+|  |           +------------------------------+                   |  |
+|  +--------------------------------------------------------------+  |
+|                                                                    |
++--------------------------------------------------------------------+
 ```
 
 ### Module Interactions
 
 ```text
-┌─────────────┐     OrderIntent      ┌─────────────────┐
-│   Strategy  │ ──────────────────▶  │  Priority Queue │
-│   (User)    │                      │                 │
-└─────────────┘                      └────────┬────────┘
-                                              │
-                                              ▼
-┌─────────────┐                      ┌─────────────────┐
-│  EIP-712    │ ◀─── sign_order ──── │  Order Gateway  │
-│  Signer     │                      │  (orchestrator) │
-└─────────────┘                      └────────┬────────┘
-                                              │
-              ┌───────────────────────────────┼───────────────────────────────┐
-              ▼                               ▼                               ▼
-     ┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
-      │  Rate Limiter   │             │   REST Client   │             │ Confirmation    │
-      │  (wait permit)  │ ─────────▶  │   POST /order   │ ─────────▶  │ Tracker         │
-      └─────────────────┘             └─────────────────┘             └────────┬────────┘
-                                                                              │
-                                    ┌───────────────────────────────────────┘
-                                    ▼
-                           ┌─────────────────┐             ┌─────────────────┐
-                           │   WebSocket     │ ─────────▶  │   Chain Client  │
-                           │ (status=Finish) │ trigger     │   balanceOf()   │
-                           └─────────────────┘             └─────────────────┘
-
++-----------+  OrderIntent  +----------+
+| Strategy  | ------------> | Priority |
+|           |               |  Queue   |
++-----------+               +----+-----+
+                                 |
+                                 V
++-----------+              +-----------+
+|  EIP-712  | <---sign---- |   Order   |
+|  Signer   |              |  Gateway  |
++-----------+              +-----+-----+
+                                 |
+        +-----------+------------+-----------+
+        |           |            |           |
+        V           V            V           |
+   +---------+ +---------+ +-----------+     |
+   |  Rate   | |  REST   | | Confirma- |     |
+   | Limiter | | Client  | |   tion    |     |
+   | (wait)  | | (post)  | |  Tracker  | <---+ (register)
+   +---------+ +----+----+ +-----+-----+
+                    |            ^
+                    |            | (trigger)
+                    V      +-----+-----+
+               +-------+   |    WS     |
+               |  API  |-->|  Client   |
+               +-------+   +-----------+
+                                 |
+                           +-----+-----+
+                           |   Chain   |
+                           |   Client  |
+                           +-----+-----+
+                                 |
+                                 V
+                           +-----------+
+                           | Confirmed |
+                           |   Event   |
+                           +-----------+
 ```
+
+
 
 ### Data Flow Summary
 
@@ -506,7 +516,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │ WebSocket      │    │ REST Poller    │    │ Chain Subscriber │     │  │
 │  │  │ Client         │    │ (Fallback)     │    │ (Position Query) │     │  │
 │  │  │                │    │                │    │                  │     │  │
-│  │  │ • market.depth.diff  │    │ • /markets     │    │ • balanceOf()    │     │  │
+│  │  │ • depth.diff     │    │ • /markets     │    │ • balanceOf()    │     │  │
 │  │  │ • trade.order  │    │ • /orderbook   │    │ • event logs     │     │  │
 │  │  │ • trade.record │    │                │    │                  │     │  │
 │  │  └───────┬────────┘    └───────┬────────┘    └────────┬─────────┘     │  │
@@ -554,7 +564,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │               Confirmation Tracker (Hybrid)                    │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Trigger: WebSocket trade.order.update (status = "Finish")     │  │   │
-│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                     │  │   │
+│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                      │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Source of Truth: On-chain balanceOf() query                   │  │   │
 │  │  │  Latency: 3-5 seconds (unavoidable chain confirmation)         │  │   │
@@ -590,8 +600,8 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            WebSocket: trade.order.update                           │     │
 │  │            Wait for: status = "Finish"                             │     │
 │  │                                                                    │     │
-│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)        │     │
-│  │  ✅ ONLY USE: status field as trigger signal                       │     │
+│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)         │     │
+│  │  ✅ ONLY USE: status field as trigger signal                        │     │
 │  └────────────────────────────────┬───────────────────────────────────┘     │
 │                                   │ status = "Finish"                       │
 │                                   ▼                                         │
@@ -599,7 +609,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            On-Chain Query (ONLY RELIABLE SOURCE)                   │     │
 │  │                                                                    │     │
 │  │  Contract: ConditionalTokens (ERC-1155)                            │     │
-│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774            │     │
+│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774              │     │
 │  │  Method:   balanceOf(account, positionId) → uint256                │     │
 │  │                                                                    │     │
 │  │  Latency: 3-5 seconds (chain confirmation, UNAVOIDABLE)            │     │
@@ -1804,11 +1814,27 @@ This section defines the **exact execution order** for remaining work. Follow th
 | Component | Design | Code | Tests | Status |
 |-----------|--------|------|-------|--------|
 | **Stage A: Parquet Recorder** | ✅ | ✅ | ✅ | Complete (incl. best-overpay columns) |
-| **Stage C: Research CLI** | ✅ | 80% | ✅ | Gas/fill modeling missing |
-| **P2: Strategy Iteration** | ✅ | 0% | - | All pending |
-| **Section 12: CI/CD** | ✅ | 0% | - | Workflow files missing |
+| **Stage C: Research CLI** | ✅ | ✅ | ✅ | Complete (gas/fill/resolution lock) |
+| **Section 12: CI/CD** | ✅ | ✅ | ✅ | Complete (quick-check.yml) |
+| **P2: Strategy Iteration** | ✅ | 40% | - | Steps 1-4 done, Steps 5-10 pending |
 | Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
 | Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
+
+**Step-by-Step Status**:
+
+| Step | Task | Status | Evidence |
+|------|------|--------|----------|
+| 1 | CI quick-check workflow | ✅ Complete | `.github/workflows/quick-check.yml` |
+| 2 | `--gas-cost-usd` CLI param | ✅ Complete | `src/research/config.rs:19,84-89` |
+| 3 | Fill probability filter | ✅ Complete | `src/research/sim.rs:11` `LIQUIDITY_FILL_BUFFER = 0.8` |
+| 3.5 | Resolution lock modeling | ✅ Complete | `src/research/sim.rs:12,187-198` `MIN_ANNUAL_ROI = 0.20` |
+| 4 | `scan_stats` Parquet writer | ✅ Complete | `src/data/recorder/parquet.rs` with best_overpay columns |
+| 5 | `--mode microstructure` | 🔶 Pending | See Implementation Spec below |
+| 6 | `--mode sweep` grid search | 🔶 Pending | See Implementation Spec below |
+| 7 | Capital turnover metric | 🔶 Pending | See Implementation Spec below |
+| 8 | Train/test validation | 🔶 Pending | See Implementation Spec below |
+| 9 | JSON config output | 🔶 Pending | See Implementation Spec below |
+| 10 | Reorg detection (SQLite) | 🔶 Pending | See Implementation Spec below |
 
 #### Execution Order (Step-by-Step)
 
@@ -1947,6 +1973,124 @@ This section defines the **exact execution order** for remaining work. Follow th
 | Stage E (Feature Layer) | Premature optimization | After winning strategy proven |
 | ML-based fill probability | Insufficient data | After 10K+ trades logged |
 | Real-time parameter updates | Safety concern | Never (human review required) |
+
+### Implementation Specifications (Steps 5-10)
+
+#### Step 5: Microstructure Analysis Mode (`--mode microstructure`)
+
+**Goal**: Output raw metrics to CSV for external analysis (Python/Pandas) to understand market characteristics before tuning.
+
+**Files**:
+- `src/research/config.rs`: Add `RunMode` enum (`Backtest`, `Microstructure`, `Sweep`).
+- `src/research/mod.rs`: Branch execution based on mode.
+- `src/research/report.rs`: Add `write_microstructure_report`.
+
+**Output**: `reports/microstructure.csv`
+- Columns: `market_id`, `liquidity_pct`, `spread_p50`, `spread_p95`, `slippage_100`, `opps_per_hour`
+
+#### Step 6: Parameter Sweep Mode (`--mode sweep`)
+
+**Goal**: Grid search over strategy parameters to find optimal configuration.
+
+**Files**:
+- `src/research/sweep.rs` (NEW): Logic to generate grid and run parallel simulations.
+- `src/research/mod.rs`: Integrate sweep module.
+
+**Grid**:
+- `min_profit_rate`: 0.002, 0.003, 0.005, 0.007, 0.01
+- `min_liquidity`: 0, 25, 50, 100, 200
+- `gas_cost_usd`: 0.30, 0.60, 1.00
+
+**Output**: `reports/param_sweep.csv`
+- Columns: `min_profit_rate`, `min_liquidity`, `gas_cost_usd`, `trades`, `pnl`, `max_drawdown`, `win_rate`, `sharpe`
+
+**Memory Safety Requirements**:
+- Add memory monitoring logs during grid search execution
+- Limit data loading to prevent OOM: use Polars streaming with `with_streaming(true)`
+- Log RSS memory usage before/after each parameter combination
+- Add optional CLI flag `--max-mem-gb` to fail-safe if memory exceeds threshold
+
+#### Step 7: Capital Turnover Metric
+
+**Goal**: Optimize for capital efficiency (`PnL / average_locked_capital`) rather than just raw PnL.
+
+**Metric Definition**:
+- Formula: `capital_efficiency = PnL / average_locked_capital`
+- **Note**: This is effectively **ROCE** (Return on Capital Employed), measuring capital utilization efficiency
+- Keep current implementation; add documentation comment explaining the ROCE interpretation
+
+**Changes**:
+- `SimState`: Track `locked_time_weighted_sum` and `total_traded_notional`.
+- `apply_confirmations()`: Update weighted sum based on elapsed time.
+- `MarketReport`: Include `capital_efficiency` metric.
+- Add inline comment: `// ROCE: Return on Capital Employed - capital efficiency metric`
+
+#### Step 8: Train/Test Validation
+
+**Goal**: Prevent overfitting by validating parameters on unseen time periods.
+
+**Changes**:
+- CLI: Add `--train-ratio` (default 0.7).
+- Logic: Split `MarketTick` vectors by timestamp.
+- **CRITICAL REQUIREMENT**: In `split_by_time()`, MUST add `.sort_by_key(|t| t.ts_us)` before splitting to ensure temporal consistency.
+- Workflow:
+    1. Run sweep on Train set.
+    2. Pick best config.
+    3. Run single simulation on Test set.
+    4. Report PnL gap.
+
+**Implementation Note**:
+```rust
+// In split_by_time() - REQUIRED
+let mut ticks = ticks_to_split;
+ticks.sort_by_key(|t| t.ts_us);  // MANDATORY: ensures clean train/test split
+let split_idx = (ticks.len() as f64 * train_ratio) as usize;
+```
+
+#### Step 9: JSON Config Export
+
+**Goal**: Automate the transfer of research results to production config.
+
+**Changes**:
+- `sweep.rs`: Export `RecommendedConfig` struct to `reports/recommended_config.json`.
+- Include metadata: `generated_at`, `data_range`, `expected_metrics`.
+
+#### Step 10: Reorg Detection (SQLite Schema)
+
+**Goal**: Add data support for detecting chain reorgs (block number tracking).
+
+**Critical Technical Constraints (Expert Feedback)**:
+1.  **Runtime Schema Evolution Logic**: Do NOT use simple `ALTER TABLE` scripts or migration scripts. Daily DB rotation means every new file needs schema update. Use `ensure_schema()` pattern in Rust code to automatically apply migrations if columns are missing at runtime.
+2.  **Optional tx_hash**: We rely on `balanceOf` polling, so we might not have a transaction hash. Make `tx_hash` nullable/optional.
+3.  **Mandatory Block Number**: Must call `get_block_number()` immediately after `balanceOf()` to anchor state to a chain height.
+
+**Schema Updates**:
+- `confirmed_orders`: Add `block_number` (INTEGER), `tx_hash` (TEXT, nullable), `reorg_checked` (INTEGER default 0).
+
+**Changes**:
+- `src/data/recorder/mod.rs`: Update `init_schema` with runtime schema evolution logic (check column existence, add if missing) and `insert_confirmed_order`.
+- `src/execution/confirmation.rs`: Fetch block number during confirmation cycle.
+
+**Runtime Schema Evolution Pattern**:
+```rust
+// In src/data/recorder/mod.rs - ensure_schema()
+fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS confirmed_orders (...);"
+    )?;
+    // Runtime schema evolution - add columns if missing
+    let columns: Vec<String> = conn.prepare("PRAGMA table_info(confirmed_orders)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect();
+    if !columns.contains(&"block_number".to_string()) {
+        conn.execute("ALTER TABLE confirmed_orders ADD COLUMN block_number INTEGER", [])?;
+    }
+    if !columns.contains(&"tx_hash".to_string()) {
+        conn.execute("ALTER TABLE confirmed_orders ADD COLUMN tx_hash TEXT", [])?;
+    }
+    // ... similar for reorg_checked
+}
+```
 
 ### Stage A: Local Structured Recorder (Parquet sidecar)
 
