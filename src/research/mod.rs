@@ -71,9 +71,13 @@ fn run_backtest(
     market_metadata: &HashMap<String, i64>,
     config: &config::CliConfig,
 ) -> Result<()> {
-    let scan_skip_rate = io::load_scan_skip_rate(config)?.unwrap_or(0.0);
-    let micro_reports =
-        microstructure::build_microstructure_reports(markets, config, scan_skip_rate);
+    let (scan_skip_rates, default_rate) = io::load_scan_skip_rates(config)?;
+    let micro_reports = microstructure::build_microstructure_reports(
+        markets,
+        config,
+        &scan_skip_rates,
+        default_rate,
+    );
     let arb_config = ArbitrageConfig {
         min_profit_rate: config.min_profit_rate,
         min_liquidity: config.min_liquidity,
@@ -107,8 +111,13 @@ fn run_microstructure(
     markets: &HashMap<String, Vec<types::MarketTick>>,
     config: &config::CliConfig,
 ) -> Result<()> {
-    let scan_skip_rate = io::load_scan_skip_rate(config)?.unwrap_or(0.0);
-    let reports = microstructure::build_microstructure_reports(markets, config, scan_skip_rate);
+    let (scan_skip_rates, default_rate) = io::load_scan_skip_rates(config)?;
+    let reports = microstructure::build_microstructure_reports(
+        markets,
+        config,
+        &scan_skip_rates,
+        default_rate,
+    );
     let output = config
         .output_microstructure
         .as_deref()

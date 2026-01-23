@@ -47,6 +47,7 @@ pub struct SnapshotRow {
 
 #[derive(Debug, Clone)]
 pub struct ScanStatsRow {
+    pub market_id: String,
     pub scan_ts_us: i64,
     pub duration_us: u64,
     pub markets_scanned: u64,
@@ -652,6 +653,7 @@ fn validate_parquet_footer(path: &str) -> PolarsResult<()> {
 }
 
 fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> {
+    let market_ids: Vec<String> = rows.iter().map(|row| row.market_id.clone()).collect();
     let scan_ts_us: Vec<i64> = rows.iter().map(|row| row.scan_ts_us).collect();
     let duration_us: Vec<u64> = rows.iter().map(|row| row.duration_us).collect();
     let markets_scanned: Vec<u64> = rows.iter().map(|row| row.markets_scanned).collect();
@@ -707,6 +709,7 @@ fn build_scan_stats_dataframe(rows: &[ScanStatsRow]) -> PolarsResult<DataFrame> 
         rows.iter().map(|row| row.neg_risk_best_overpay).collect();
 
     DataFrame::new(vec![
+        Series::new("market_id".into(), market_ids).into(),
         Series::new("scan_ts_us".into(), scan_ts_us).into(),
         Series::new("duration_us".into(), duration_us).into(),
         Series::new("markets_scanned".into(), markets_scanned).into(),
@@ -992,6 +995,7 @@ mod tests {
         );
 
         let row1 = ScanStatsRow {
+            market_id: "ALL".to_string(),
             scan_ts_us: base_ts_us,
             duration_us: 500,
             markets_scanned: 10,
@@ -1021,6 +1025,7 @@ mod tests {
             neg_risk_best_overpay: 0.056,
         };
         let row2 = ScanStatsRow {
+            market_id: "ALL".to_string(),
             scan_ts_us: base_ts_us + 1_000_000,
             duration_us: 800,
             markets_scanned: 12,

@@ -157,6 +157,97 @@ pub struct ArbScanStats {
 }
 
 impl ArbScanStats {
+    pub fn snapshot(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn delta(&self, previous: &Self) -> Self {
+        Self {
+            yesno_checked: self.yesno_checked.saturating_sub(previous.yesno_checked),
+            yesno_missing_ask: self
+                .yesno_missing_ask
+                .saturating_sub(previous.yesno_missing_ask),
+            yesno_cost_ge_one: self
+                .yesno_cost_ge_one
+                .saturating_sub(previous.yesno_cost_ge_one),
+            yesno_low_liquidity: self
+                .yesno_low_liquidity
+                .saturating_sub(previous.yesno_low_liquidity),
+            yesno_below_min_notional: self
+                .yesno_below_min_notional
+                .saturating_sub(previous.yesno_below_min_notional),
+            yesno_below_min_profit: self
+                .yesno_below_min_profit
+                .saturating_sub(previous.yesno_below_min_profit),
+            yesno_found: self.yesno_found.saturating_sub(previous.yesno_found),
+            yesno_best_overpay: if self.yesno_best_overpay < previous.yesno_best_overpay {
+                self.yesno_best_overpay
+            } else {
+                f64::INFINITY
+            },
+            mint_sell_checked: self
+                .mint_sell_checked
+                .saturating_sub(previous.mint_sell_checked),
+            mint_sell_missing_bid: self
+                .mint_sell_missing_bid
+                .saturating_sub(previous.mint_sell_missing_bid),
+            mint_sell_revenue_le_one: self
+                .mint_sell_revenue_le_one
+                .saturating_sub(previous.mint_sell_revenue_le_one),
+            mint_sell_low_liquidity: self
+                .mint_sell_low_liquidity
+                .saturating_sub(previous.mint_sell_low_liquidity),
+            mint_sell_below_min_notional: self
+                .mint_sell_below_min_notional
+                .saturating_sub(previous.mint_sell_below_min_notional),
+            mint_sell_below_min_profit: self
+                .mint_sell_below_min_profit
+                .saturating_sub(previous.mint_sell_below_min_profit),
+            mint_sell_found: self
+                .mint_sell_found
+                .saturating_sub(previous.mint_sell_found),
+            mint_sell_best_shortfall: if self.mint_sell_best_shortfall
+                < previous.mint_sell_best_shortfall
+            {
+                self.mint_sell_best_shortfall
+            } else {
+                f64::INFINITY
+            },
+            neg_risk_checked: self
+                .neg_risk_checked
+                .saturating_sub(previous.neg_risk_checked),
+            neg_risk_missing_ask: self
+                .neg_risk_missing_ask
+                .saturating_sub(previous.neg_risk_missing_ask),
+            neg_risk_cost_ge_one: self
+                .neg_risk_cost_ge_one
+                .saturating_sub(previous.neg_risk_cost_ge_one),
+            neg_risk_low_liquidity: self
+                .neg_risk_low_liquidity
+                .saturating_sub(previous.neg_risk_low_liquidity),
+            neg_risk_below_min_notional: self
+                .neg_risk_below_min_notional
+                .saturating_sub(previous.neg_risk_below_min_notional),
+            neg_risk_below_min_profit: self
+                .neg_risk_below_min_profit
+                .saturating_sub(previous.neg_risk_below_min_profit),
+            neg_risk_found: self.neg_risk_found.saturating_sub(previous.neg_risk_found),
+            neg_risk_best_overpay: if self.neg_risk_best_overpay < previous.neg_risk_best_overpay {
+                self.neg_risk_best_overpay
+            } else {
+                f64::INFINITY
+            },
+        }
+    }
+
+    pub fn total_checked(&self) -> u64 {
+        self.yesno_checked + self.mint_sell_checked + self.neg_risk_checked
+    }
+
+    pub fn total_found(&self) -> u64 {
+        self.yesno_found + self.mint_sell_found + self.neg_risk_found
+    }
+
     pub fn summary(&self) -> String {
         let yesno_overpay = if self.yesno_best_overpay.is_finite() {
             format!("{:.6}", self.yesno_best_overpay)
@@ -260,6 +351,10 @@ impl ArbitrageDetector {
 
     pub fn drain_stats(&mut self) -> ArbScanStats {
         std::mem::take(&mut self.stats)
+    }
+
+    pub fn stats_snapshot(&self) -> ArbScanStats {
+        self.stats.snapshot()
     }
 
     /// Detect Yes/No arbitrage opportunity in a binary market.

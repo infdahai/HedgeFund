@@ -498,6 +498,8 @@ async fn main() -> Result<()> {
 
                 markets_scanned += 1;
                 let detected_at = now_unix_seconds();
+                #[cfg(feature = "polars")]
+                let stats_before = detector.stats_snapshot();
                 if let Some(opp) =
                     detector.detect_neg_risk_arbitrage(&scan.market_id, &outcomes, detected_at)
                 {
@@ -505,6 +507,43 @@ async fn main() -> Result<()> {
                     info!("📊 NEG-RISK FOUND: {}", opp.summary());
                     if let Err(e) = strategy_tx.send(opp).await {
                         error!("Failed to send opportunity to gateway: {}", e);
+                    }
+                }
+                #[cfg(feature = "polars")]
+                if let Some(recorder) = &parquet_handle_scanner {
+                    let stats_after = detector.stats_snapshot();
+                    let delta = stats_after.delta(&stats_before);
+                    if delta.total_checked() > 0 {
+                        recorder.record_scan_stats(ScanStatsRow {
+                            market_id: scan.market_id.clone(),
+                            scan_ts_us,
+                            duration_us: 0,
+                            markets_scanned: 1,
+                            yesno_checked: delta.yesno_checked,
+                            yesno_found: delta.yesno_found,
+                            yesno_missing_ask: delta.yesno_missing_ask,
+                            yesno_cost_ge_one: delta.yesno_cost_ge_one,
+                            yesno_low_liquidity: delta.yesno_low_liquidity,
+                            yesno_below_min_notional: delta.yesno_below_min_notional,
+                            yesno_below_min_profit: delta.yesno_below_min_profit,
+                            yesno_best_overpay: delta.yesno_best_overpay,
+                            mint_sell_checked: delta.mint_sell_checked,
+                            mint_sell_found: delta.mint_sell_found,
+                            mint_sell_missing_bid: delta.mint_sell_missing_bid,
+                            mint_sell_revenue_le_one: delta.mint_sell_revenue_le_one,
+                            mint_sell_low_liquidity: delta.mint_sell_low_liquidity,
+                            mint_sell_below_min_notional: delta.mint_sell_below_min_notional,
+                            mint_sell_below_min_profit: delta.mint_sell_below_min_profit,
+                            mint_sell_best_shortfall: delta.mint_sell_best_shortfall,
+                            neg_risk_checked: delta.neg_risk_checked,
+                            neg_risk_found: delta.neg_risk_found,
+                            neg_risk_missing_ask: delta.neg_risk_missing_ask,
+                            neg_risk_cost_ge_one: delta.neg_risk_cost_ge_one,
+                            neg_risk_low_liquidity: delta.neg_risk_low_liquidity,
+                            neg_risk_below_min_notional: delta.neg_risk_below_min_notional,
+                            neg_risk_below_min_profit: delta.neg_risk_below_min_profit,
+                            neg_risk_best_overpay: delta.neg_risk_best_overpay,
+                        });
                     }
                 }
             }
@@ -606,6 +645,8 @@ async fn main() -> Result<()> {
 
                 // Check for Yes/No Arbitrage
                 let detected_at = now_unix_seconds();
+                #[cfg(feature = "polars")]
+                let stats_before = detector.stats_snapshot();
                 if let Some(opp) = detector.detect_yesno_arbitrage(
                     &market,
                     &yes_ob.bids,
@@ -637,6 +678,43 @@ async fn main() -> Result<()> {
                         error!("Failed to send opportunity to gateway: {}", e);
                     }
                 }
+                #[cfg(feature = "polars")]
+                if let Some(recorder) = &parquet_handle_scanner {
+                    let stats_after = detector.stats_snapshot();
+                    let delta = stats_after.delta(&stats_before);
+                    if delta.total_checked() > 0 {
+                        recorder.record_scan_stats(ScanStatsRow {
+                            market_id: market.id.clone(),
+                            scan_ts_us,
+                            duration_us: 0,
+                            markets_scanned: 1,
+                            yesno_checked: delta.yesno_checked,
+                            yesno_found: delta.yesno_found,
+                            yesno_missing_ask: delta.yesno_missing_ask,
+                            yesno_cost_ge_one: delta.yesno_cost_ge_one,
+                            yesno_low_liquidity: delta.yesno_low_liquidity,
+                            yesno_below_min_notional: delta.yesno_below_min_notional,
+                            yesno_below_min_profit: delta.yesno_below_min_profit,
+                            yesno_best_overpay: delta.yesno_best_overpay,
+                            mint_sell_checked: delta.mint_sell_checked,
+                            mint_sell_found: delta.mint_sell_found,
+                            mint_sell_missing_bid: delta.mint_sell_missing_bid,
+                            mint_sell_revenue_le_one: delta.mint_sell_revenue_le_one,
+                            mint_sell_low_liquidity: delta.mint_sell_low_liquidity,
+                            mint_sell_below_min_notional: delta.mint_sell_below_min_notional,
+                            mint_sell_below_min_profit: delta.mint_sell_below_min_profit,
+                            mint_sell_best_shortfall: delta.mint_sell_best_shortfall,
+                            neg_risk_checked: delta.neg_risk_checked,
+                            neg_risk_found: delta.neg_risk_found,
+                            neg_risk_missing_ask: delta.neg_risk_missing_ask,
+                            neg_risk_cost_ge_one: delta.neg_risk_cost_ge_one,
+                            neg_risk_low_liquidity: delta.neg_risk_low_liquidity,
+                            neg_risk_below_min_notional: delta.neg_risk_below_min_notional,
+                            neg_risk_below_min_profit: delta.neg_risk_below_min_profit,
+                            neg_risk_best_overpay: delta.neg_risk_best_overpay,
+                        });
+                    }
+                }
             }
 
             let duration = scan_start.elapsed();
@@ -665,6 +743,7 @@ async fn main() -> Result<()> {
             #[cfg(feature = "polars")]
             if let Some(recorder) = &parquet_handle_scanner {
                 recorder.record_scan_stats(ScanStatsRow {
+                    market_id: "ALL".to_string(),
                     scan_ts_us,
                     duration_us,
                     markets_scanned: markets_scanned as u64,
