@@ -397,7 +397,8 @@ fn sum_u64(df: &DataFrame, name: &str) -> Result<u64> {
     Err(anyhow!("unsupported scan_stats column type: {name}"))
 }
 
-fn value_u64_at(series: &Series, idx: usize) -> Result<u64> {
+fn value_u64_at(column: &Column, idx: usize) -> Result<u64> {
+    let series = column.as_materialized_series();
     if let Ok(col) = series.u64() {
         return Ok(col.get(idx).unwrap_or(0));
     }

@@ -187,8 +187,8 @@ pub(crate) fn validate_configs(
 }
 
 pub(crate) fn data_period(markets: &HashMap<String, Vec<MarketTick>>) -> Option<(i64, i64)> {
-    let mut min_ts = None;
-    let mut max_ts = None;
+    let mut min_ts: Option<i64> = None;
+    let mut max_ts: Option<i64> = None;
     for ticks in markets.values() {
         for tick in ticks {
             min_ts = Some(min_ts.map_or(tick.ts_us, |value| value.min(tick.ts_us)));
