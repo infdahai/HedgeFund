@@ -7,10 +7,18 @@ use super::types::{MarketTick, MicrostructureReport};
 pub(crate) fn build_microstructure_reports(
     markets: &HashMap<String, Vec<MarketTick>>,
     config: &CliConfig,
+    scan_skip_rates: &HashMap<String, f64>,
+    default_scan_skip_rate: f64,
 ) -> Vec<MicrostructureReport> {
     markets
         .iter()
-        .map(|(market_id, ticks)| MicroTotals::from_ticks(market_id, ticks, config))
+        .map(|(market_id, ticks)| {
+            let scan_skip_rate = scan_skip_rates
+                .get(market_id)
+                .copied()
+                .unwrap_or(default_scan_skip_rate);
+            MicroTotals::from_ticks(market_id, ticks, config, scan_skip_rate)
+        })
         .collect()
 }
 
@@ -30,6 +38,7 @@ impl MicroTotals {
         market_id: &str,
         ticks: &[MarketTick],
         config: &CliConfig,
+        scan_skip_rate: f64,
     ) -> MicrostructureReport {
         let mut totals = MicroTotals::default();
         for tick in ticks {
@@ -79,10 +88,10 @@ impl MicroTotals {
             }
         }
 
-        totals.finish(market_id.to_string())
+        totals.finish(market_id.to_string(), scan_skip_rate)
     }
 
-    fn finish(mut self, market_id: String) -> MicrostructureReport {
+    fn finish(mut self, market_id: String, scan_skip_rate: f64) -> MicrostructureReport {
         let liquidity_pct = if self.total_ticks > 0 {
             self.liquid_ticks as f64 / self.total_ticks as f64 * 100.0
         } else {
@@ -108,6 +117,7 @@ impl MicroTotals {
         MicrostructureReport {
             market_id,
             liquidity_availability_pct: liquidity_pct,
+            scan_skip_rate,
             spread_p50,
             spread_p95,
             slippage_100_shares: slippage_100,

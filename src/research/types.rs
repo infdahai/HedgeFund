@@ -50,6 +50,7 @@ pub(crate) struct ConfirmedOrderRecord {
 pub(crate) struct MicrostructureReport {
     pub(crate) market_id: String,
     pub(crate) liquidity_availability_pct: f64,
+    pub(crate) scan_skip_rate: f64,
     pub(crate) spread_p50: f64,
     pub(crate) spread_p95: f64,
     pub(crate) slippage_100_shares: f64,
