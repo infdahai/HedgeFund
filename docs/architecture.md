@@ -516,7 +516,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │ WebSocket      │    │ REST Poller    │    │ Chain Subscriber │     │  │
 │  │  │ Client         │    │ (Fallback)     │    │ (Position Query) │     │  │
 │  │  │                │    │                │    │                  │     │  │
-│  │  │ • market.depth.diff  │    │ • /markets     │    │ • balanceOf()    │     │  │
+│  │  │ • depth.diff     │    │ • /markets     │    │ • balanceOf()    │     │  │
 │  │  │ • trade.order  │    │ • /orderbook   │    │ • event logs     │     │  │
 │  │  │ • trade.record │    │                │    │                  │     │  │
 │  │  └───────┬────────┘    └───────┬────────┘    └────────┬─────────┘     │  │
@@ -564,7 +564,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │               Confirmation Tracker (Hybrid)                    │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Trigger: WebSocket trade.order.update (status = "Finish")     │  │   │
-│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                     │  │   │
+│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                      │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Source of Truth: On-chain balanceOf() query                   │  │   │
 │  │  │  Latency: 3-5 seconds (unavoidable chain confirmation)         │  │   │
@@ -600,8 +600,8 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            WebSocket: trade.order.update                           │     │
 │  │            Wait for: status = "Finish"                             │     │
 │  │                                                                    │     │
-│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)        │     │
-│  │  ✅ ONLY USE: status field as trigger signal                       │     │
+│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)         │     │
+│  │  ✅ ONLY USE: status field as trigger signal                        │     │
 │  └────────────────────────────────┬───────────────────────────────────┘     │
 │                                   │ status = "Finish"                       │
 │                                   ▼                                         │
@@ -609,7 +609,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            On-Chain Query (ONLY RELIABLE SOURCE)                   │     │
 │  │                                                                    │     │
 │  │  Contract: ConditionalTokens (ERC-1155)                            │     │
-│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774            │     │
+│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774              │     │
 │  │  Method:   balanceOf(account, positionId) → uint256                │     │
 │  │                                                                    │     │
 │  │  Latency: 3-5 seconds (chain confirmation, UNAVOIDABLE)            │     │
