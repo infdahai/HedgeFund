@@ -80,6 +80,27 @@ pub(crate) fn simulate_market(
         0.0
     };
 
+    let duration_us = ticks
+        .last()
+        .map(|tick| tick.ts_us)
+        .unwrap_or(0)
+        .saturating_sub(ticks.first().map(|tick| tick.ts_us).unwrap_or(0));
+    let avg_locked = if duration_us > 0 {
+        state.locked_time_weighted_sum / duration_us as f64
+    } else {
+        0.0
+    };
+    let capital_turnover = if avg_locked > 0.0 {
+        state.total_traded_notional / avg_locked
+    } else {
+        0.0
+    };
+    let return_on_capital_employed = if avg_locked > 0.0 {
+        (state.balance - config.initial_balance) / avg_locked
+    } else {
+        0.0
+    };
+
     MarketReport {
         market_id: market.id.clone(),
         trades,
@@ -89,6 +110,8 @@ pub(crate) fn simulate_market(
         total_trades: state.total_txs,
         win_rate,
         avg_confirm_latency_us,
+        capital_turnover,
+        return_on_capital_employed,
     }
 }
 
@@ -223,6 +246,7 @@ fn execute_trade(
     let notional = opportunity.total_cost * opportunity.max_size;
     let fee = (total_spend - notional).max(0.0);
     state.total_fees += fee;
+    state.total_traded_notional += total_spend;
 
     let confirm_ts_us = current_ts + config.confirm_delay_us;
     info!(
@@ -307,6 +331,11 @@ fn annualized_roi(profit_rate: f64, lock_days: f64) -> f64 {
 }
 
 fn apply_confirmations(state: &mut SimState, current_ts: i64) {
+    if state.last_update_ts_us > 0 && current_ts > state.last_update_ts_us {
+        let elapsed_us = current_ts - state.last_update_ts_us;
+        state.locked_time_weighted_sum += state.locked_balance * elapsed_us as f64;
+    }
+    state.last_update_ts_us = current_ts;
     let mut confirmed_profit = 0.0;
     let mut confirmed_cost = 0.0;
     state.pending_txs.retain(|tx| {

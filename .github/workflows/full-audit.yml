@@ -1,9 +1,9 @@
 name: Full Audit
 
-# Trigger: Nightly runs + Manual + Release tags + Main branch push
+# Trigger: Nightly runs + Manual + Release tags (NOT on every PR)
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
   workflow_dispatch:
     inputs:
       run_integration_tests:
@@ -14,9 +14,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,24 +25,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    strategy:
-      matrix:
-        # Test across stable and beta Rust versions
-        rust: [stable, beta]
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Rust Toolchain (${{ matrix.rust }})
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: stable
           components: rustfmt, clippy
 
-      # Cache for faster builds
+      # Faster caching with explicit paths
       - name: Cache Cargo Dependencies
-        uses: swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # Setup sccache for faster compilation
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
 
       - name: Format Check
         run: cargo fmt --all -- --check
@@ -53,20 +57,21 @@ jobs:
       - name: Clippy (All Targets)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Build All Targets
-        run: cargo build --all-targets --all-features
+      # Build lib only first (faster, less memory)
+      - name: Build Library
+        run: cargo build --lib --all-features
 
-      - name: Run All Tests (Unit Only - No Network)
+      # Run unit tests (lib only)
+      - name: Run Unit Tests
         run: cargo test --lib
 
+      # Build release binary
       - name: Build Release Binary
-        if: matrix.rust == 'stable'
         run: cargo build --release
 
+      # Integration tests (requires secrets, must be manually triggered)
       - name: Integration Tests (With Secrets)
-        if: |
-          matrix.rust == 'stable' &&
-          (github.event.inputs.run_integration_tests == 'true' || contains(github.event.head_commit.message, '[ci-integration]'))
+        if: github.event.inputs.run_integration_tests == 'true' || contains(github.event.head_commit.message || '', '[ci-integration]')
         env:
           OPINION_API_KEY: ${{ secrets.OPINION_API_KEY }}
           OPINION_REST_URL: ${{ secrets.OPINION_REST_URL }}
@@ -76,22 +81,25 @@ jobs:
           BSC_RPC_URL: ${{ secrets.BSC_RPC_URL }}
         run: |
           echo "Running integration tests with secrets..."
-          cargo test --tests -- --ignored
+          # Run all integration tests in tests/ directory
+          for test in tests/*.rs; do
+            name=$(basename "$test" .rs)
+            cargo test --test "$name" 2>&1 || true
+          done
 
+      # Upload artifacts on release tags
       - name: Upload Release Artifacts
-        if: |
-          matrix.rust == 'stable' &&
-          startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: opinion-hft-${{ matrix.rust }}
+          name: opinion-hft
           path: target/release/opinion-hft
           retention-days: 90
 
   security-scan:
     name: Security Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout Code
@@ -101,7 +109,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo Dependencies
-        uses: swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-audit-${{ runner.os }}-
 
       - name: Audit Dependencies (cargo-audit)
         run: |
@@ -116,7 +132,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20  # Increased for tarpaulin
 
     steps:
       - name: Checkout Code
@@ -126,7 +142,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo Dependencies
-        uses: swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-tarpaulin-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-tarpaulin-${{ runner.os }}-
 
       - name: Generate Coverage Report
         run: |

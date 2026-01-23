@@ -23,6 +23,16 @@ pub(crate) fn print_summary(
         .map(|r| r.avg_confirm_latency_us)
         .fold(0.0, |acc, v| acc + v)
         / reports.len().max(1) as f64;
+    let avg_capital_turnover = reports
+        .iter()
+        .map(|r| r.capital_turnover)
+        .fold(0.0, |acc, v| acc + v)
+        / reports.len().max(1) as f64;
+    let avg_return_on_capital_employed = reports
+        .iter()
+        .map(|r| r.return_on_capital_employed)
+        .fold(0.0, |acc, v| acc + v)
+        / reports.len().max(1) as f64;
 
     println!("research summary:");
     println!("  markets: {}", reports.len());
@@ -31,6 +41,11 @@ pub(crate) fn print_summary(
     println!("  fees: {:.6}", total_fees);
     println!("  max_drawdown: {:.4}", max_drawdown);
     println!("  avg_confirm_latency_us: {:.1}", avg_latency);
+    println!("  capital_turnover: {:.4}", avg_capital_turnover);
+    println!(
+        "  return_on_capital_employed: {:.4}",
+        avg_return_on_capital_employed
+    );
     println!("  initial_balance: {:.2}", config.initial_balance);
     println!("  output_rows: {}", trades.len());
 
@@ -89,6 +104,35 @@ pub(crate) fn write_trade_report(path: &str, trades: &[TradeRecord]) -> Result<(
             trade.total_spend,
             trade.expected_profit,
             trade.balance_after
+        ));
+    }
+
+    fs::write(output_path, contents).with_context(|| format!("write report {path}"))?;
+    Ok(())
+}
+
+pub(crate) fn write_microstructure_report(
+    path: &str,
+    reports: &[MicrostructureReport],
+) -> Result<()> {
+    let output_path = Path::new(path);
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("create output dir {parent:?}"))?;
+        }
+    }
+
+    let mut contents =
+        String::from("market_id,liquidity_pct,spread_p50,spread_p95,slippage_100,opps_per_hour\n");
+    for r in reports {
+        contents.push_str(&format!(
+            "{},{:.2},{:.6},{:.6},{:.6},{:.4}\n",
+            r.market_id,
+            r.liquidity_availability_pct,
+            r.spread_p50,
+            r.spread_p95,
+            r.slippage_100_shares,
+            r.opportunity_frequency_per_hour
         ));
     }
 

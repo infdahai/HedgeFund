@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 use crate::strategy::arbitrage::ArbitrageConfig;
 use crate::telemetry;
@@ -18,7 +19,19 @@ pub fn run() -> Result<()> {
     let df = io::load_snapshots(&config)?;
     let rows = io::rows_from_df(&df)?;
     let markets = io::build_market_ticks(rows);
-    let micro_reports = microstructure::build_microstructure_reports(&markets, &config);
+
+    match config.mode {
+        config::RunMode::Backtest => run_backtest(&markets, &config),
+        config::RunMode::Microstructure => run_microstructure(&markets, &config),
+        config::RunMode::Sweep => unimplemented!("Sweep mode not implemented yet"),
+    }
+}
+
+fn run_backtest(
+    markets: &HashMap<String, Vec<types::MarketTick>>,
+    config: &config::CliConfig,
+) -> Result<()> {
+    let micro_reports = microstructure::build_microstructure_reports(markets, config);
     let market_metadata = metadata::load_market_metadata(config.market_metadata.as_deref())?;
 
     let arb_config = ArbitrageConfig {
@@ -34,7 +47,7 @@ pub fn run() -> Result<()> {
         .map(|(market_id, ticks)| {
             let resolution_ts = market_metadata.get(market_id).copied();
             let market_info = sim::build_market_info(market_id, resolution_ts);
-            sim::simulate_market(&market_info, ticks, &config, &arb_config)
+            sim::simulate_market(&market_info, ticks, config, &arb_config)
         })
         .collect();
 
@@ -45,7 +58,22 @@ pub fn run() -> Result<()> {
 
     report::write_trade_report(&config.output, &trades)?;
     let confirmed = io::load_confirmed_orders(config.confirmed_db.as_deref()).unwrap_or_default();
-    report::print_summary(&reports, &trades, &micro_reports, &confirmed, &config);
+    report::print_summary(&reports, &trades, &micro_reports, &confirmed, config);
 
+    Ok(())
+}
+
+fn run_microstructure(
+    markets: &HashMap<String, Vec<types::MarketTick>>,
+    config: &config::CliConfig,
+) -> Result<()> {
+    let reports = microstructure::build_microstructure_reports(markets, config);
+    let output = config.output.replace(".csv", "_microstructure.csv");
+    report::write_microstructure_report(&output, &reports)?;
+    println!(
+        "Wrote {} microstructure reports to {}",
+        reports.len(),
+        output
+    );
     Ok(())
 }
