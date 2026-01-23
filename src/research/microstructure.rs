@@ -7,11 +7,18 @@ use super::types::{MarketTick, MicrostructureReport};
 pub(crate) fn build_microstructure_reports(
     markets: &HashMap<String, Vec<MarketTick>>,
     config: &CliConfig,
-    scan_skip_rate: f64,
+    scan_skip_rates: &HashMap<String, f64>,
+    default_scan_skip_rate: f64,
 ) -> Vec<MicrostructureReport> {
     markets
         .iter()
-        .map(|(market_id, ticks)| MicroTotals::from_ticks(market_id, ticks, config, scan_skip_rate))
+        .map(|(market_id, ticks)| {
+            let scan_skip_rate = scan_skip_rates
+                .get(market_id)
+                .copied()
+                .unwrap_or(default_scan_skip_rate);
+            MicroTotals::from_ticks(market_id, ticks, config, scan_skip_rate)
+        })
         .collect()
 }
 

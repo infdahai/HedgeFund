@@ -57,7 +57,7 @@ pub(crate) fn load_snapshots(config: &CliConfig) -> Result<DataFrame> {
     Ok(df)
 }
 
-pub(crate) fn load_scan_skip_rate(config: &CliConfig) -> Result<Option<f64>> {
+pub(crate) fn load_scan_skip_rates(config: &CliConfig) -> Result<(HashMap<String, f64>, f64)> {
     let mut frames = Vec::new();
     let mut skipped = 0usize;
     let mut not_ready = 0usize;
@@ -100,7 +100,7 @@ pub(crate) fn load_scan_skip_rate(config: &CliConfig) -> Result<Option<f64>> {
                 not_ready
             );
         }
-        return Ok(None);
+        return Ok((HashMap::new(), 0.0));
     }
 
     if skipped > 0 {
@@ -115,7 +115,19 @@ pub(crate) fn load_scan_skip_rate(config: &CliConfig) -> Result<Option<f64>> {
     }
 
     let df = concat(frames, UnionArgs::default())?
-        .select([
+        .with_streaming(true)
+        .collect()?;
+
+    let has_market_id = df.column("market_id").is_ok();
+    if !has_market_id {
+        let rate = compute_scan_skip_rate(&df)?;
+        return Ok((HashMap::new(), rate));
+    }
+
+    let grouped = df
+        .lazy()
+        .group_by([col("market_id")])
+        .agg([
             col("yesno_checked").sum().alias("yesno_checked"),
             col("yesno_found").sum().alias("yesno_found"),
             col("mint_sell_checked").sum().alias("mint_sell_checked"),
@@ -123,23 +135,49 @@ pub(crate) fn load_scan_skip_rate(config: &CliConfig) -> Result<Option<f64>> {
             col("neg_risk_checked").sum().alias("neg_risk_checked"),
             col("neg_risk_found").sum().alias("neg_risk_found"),
         ])
-        .with_streaming(true)
         .collect()?;
 
-    let total_checked = sum_u64(&df, "yesno_checked")?
-        + sum_u64(&df, "mint_sell_checked")?
-        + sum_u64(&df, "neg_risk_checked")?;
-    let total_found = sum_u64(&df, "yesno_found")?
-        + sum_u64(&df, "mint_sell_found")?
-        + sum_u64(&df, "neg_risk_found")?;
+    let market_ids = grouped
+        .column("market_id")
+        .context("missing scan_stats market_id")?
+        .str()
+        .context("invalid scan_stats market_id type")?;
 
-    if total_checked == 0 {
-        return Ok(Some(0.0));
+    let mut per_market = HashMap::new();
+    let mut global_rate = 0.0;
+    let mut has_global_row = false;
+
+    for idx in 0..grouped.height() {
+        let market_id = match market_ids.get(idx) {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
+        let total_checked = value_u64_at(grouped.column("yesno_checked")?, idx)?
+            + value_u64_at(grouped.column("mint_sell_checked")?, idx)?
+            + value_u64_at(grouped.column("neg_risk_checked")?, idx)?;
+        let total_found = value_u64_at(grouped.column("yesno_found")?, idx)?
+            + value_u64_at(grouped.column("mint_sell_found")?, idx)?
+            + value_u64_at(grouped.column("neg_risk_found")?, idx)?;
+        let rate = if total_checked > 0 {
+            let skipped = total_checked.saturating_sub(total_found);
+            skipped as f64 / total_checked as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        if market_id == "ALL" {
+            global_rate = rate;
+            has_global_row = true;
+            continue;
+        }
+        per_market.insert(market_id, rate);
     }
 
-    let skipped = total_checked.saturating_sub(total_found);
-    let rate = skipped as f64 / total_checked as f64 * 100.0;
-    Ok(Some(rate))
+    if !has_global_row {
+        global_rate = compute_scan_skip_rate(&df)?;
+    }
+
+    Ok((per_market, global_rate))
 }
 
 pub(crate) fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
@@ -357,6 +395,36 @@ fn sum_u64(df: &DataFrame, name: &str) -> Result<u64> {
         return Ok(col.get(0).unwrap_or(0.0).max(0.0) as u64);
     }
     Err(anyhow!("unsupported scan_stats column type: {name}"))
+}
+
+fn value_u64_at(series: &Series, idx: usize) -> Result<u64> {
+    if let Ok(col) = series.u64() {
+        return Ok(col.get(idx).unwrap_or(0));
+    }
+    if let Ok(col) = series.i64() {
+        return Ok(col.get(idx).unwrap_or(0).max(0) as u64);
+    }
+    if let Ok(col) = series.f64() {
+        return Ok(col.get(idx).unwrap_or(0.0).max(0.0) as u64);
+    }
+    Err(anyhow!(
+        "unsupported scan_stats column type: {}",
+        series.name()
+    ))
+}
+
+fn compute_scan_skip_rate(df: &DataFrame) -> Result<f64> {
+    let total_checked = sum_u64(df, "yesno_checked")?
+        + sum_u64(df, "mint_sell_checked")?
+        + sum_u64(df, "neg_risk_checked")?;
+    let total_found = sum_u64(df, "yesno_found")?
+        + sum_u64(df, "mint_sell_found")?
+        + sum_u64(df, "neg_risk_found")?;
+    if total_checked == 0 {
+        return Ok(0.0);
+    }
+    let skipped = total_checked.saturating_sub(total_found);
+    Ok(skipped as f64 / total_checked as f64 * 100.0)
 }
 
 fn derive_outcome(pair: String) -> Option<String> {
