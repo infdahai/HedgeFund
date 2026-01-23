@@ -1817,6 +1817,7 @@ This section defines the **exact execution order** for remaining work. Follow th
 | **Stage C: Research CLI** | ✅ | ✅ | ✅ | Complete (gas/fill/resolution lock) |
 | **Section 12: CI/CD** | ✅ | ✅ | ✅ | Complete (quick-check.yml) |
 | **P2: Strategy Iteration** | ✅ | 40% | - | Steps 1-4 done, Steps 5-10 pending |
+| **P2: Reorg Detection (SQLite schema)** | ✅ | ✅ | ✅ | Complete |
 | Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
 | Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
 
@@ -3090,7 +3091,7 @@ Without `scan_stats`:
 | Train/test split logic | P1 | Sweep mode | Pending |
 | JSON config output | P1 | Validation | Pending |
 | `scan_stats` recorder | P1 | Stage A | Pending |
-| Reorg detection (SQLite) | P2 | confirmed_orders | Pending |
+| Reorg detection (SQLite) | P2 | confirmed_orders | ✅ Completed |
 
 #### 10. Non-Goals
 

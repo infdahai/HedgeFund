@@ -54,6 +54,8 @@ impl RecorderHandle {
                 position_after: confirmed.position_after.to_string(),
                 confirmation_time_ms: confirmed.confirmation_time.as_millis() as u64,
                 timestamp_ms: Utc::now().timestamp_millis(),
+                block_number: confirmed.block_number,
+                tx_hash: None,
             }))
             .await;
     }
@@ -75,6 +77,8 @@ pub struct ConfirmedOrderRecord {
     pub position_after: String,
     pub confirmation_time_ms: u64,
     pub timestamp_ms: i64,
+    pub block_number: Option<u64>,
+    pub tx_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -157,6 +161,33 @@ impl Recorder {
         Ok(())
     }
 
+    fn apply_migrations(&self) -> SqlResult<()> {
+        let migrations = [
+            "ALTER TABLE confirmed_orders ADD COLUMN block_number INTEGER",
+            "ALTER TABLE confirmed_orders ADD COLUMN tx_hash TEXT",
+            "ALTER TABLE confirmed_orders ADD COLUMN reorg_checked INTEGER DEFAULT 0",
+        ];
+        for sql in migrations {
+            match self.conn.execute(sql, []) {
+                Ok(_) => tracing::info!("Applied migration: {}", sql),
+                Err(e) => {
+                    if !e.to_string().contains("duplicate column name") {
+                        tracing::warn!(
+                            "Migration warning (safe to ignore if column exists): {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        let _ = self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_confirmed_orders_reorg
+             ON confirmed_orders(reorg_checked, block_number)",
+            [],
+        );
+        Ok(())
+    }
+
     fn init_schema(&self) -> SqlResult<()> {
         self.conn.execute_batch(
             "
@@ -188,7 +219,10 @@ impl Recorder {
                 position_before TEXT NOT NULL,
                 position_after TEXT NOT NULL,
                 confirmation_time_ms INTEGER NOT NULL,
-                timestamp_ms INTEGER NOT NULL
+                timestamp_ms INTEGER NOT NULL,
+                block_number INTEGER,
+                tx_hash TEXT,
+                reorg_checked INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_market_time
@@ -198,6 +232,7 @@ impl Recorder {
                 ON confirmed_orders(timestamp_ms);
             ",
         )?;
+        self.apply_migrations()?;
         Ok(())
     }
 
@@ -249,8 +284,10 @@ impl Recorder {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO confirmed_orders
-            (order_id, market_id, token_id, side, expected_price, actual_fill, position_before, position_after, confirmation_time_ms, timestamp_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (order_id, market_id, token_id, side, expected_price, actual_fill, 
+             position_before, position_after, confirmation_time_ms, timestamp_ms,
+             block_number, tx_hash, reorg_checked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)",
             params![
                 &record.order_id,
                 &record.market_id,
@@ -261,7 +298,9 @@ impl Recorder {
                 &record.position_before,
                 &record.position_after,
                 record.confirmation_time_ms,
-                record.timestamp_ms
+                record.timestamp_ms,
+                record.block_number.map(|n| n as i64),
+                &record.tx_hash,
             ],
         )?;
         Ok(())
