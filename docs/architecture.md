@@ -3543,16 +3543,16 @@ Without `scan_stats`:
 
 | Task | Priority | Depends On | Status |
 |------|----------|------------|--------|
-| `--gas-cost-usd` CLI param | P0 | Stage C CLI | Pending |
-| Fill probability heuristic | P0 | Stage C CLI | Pending |
-| Resolution lock modeling | P0 | Market metadata | Pending |
-| `--mode microstructure` | P0 | Stage C CLI | Pending |
-| `--mode sweep` with grid | P0 | Stage C CLI | Pending |
-| Capital turnover metric | P1 | SimState | Pending |
-| `max_lock_days` param sweep | P1 | Resolution lock | Pending |
-| Train/test split logic | P1 | Sweep mode | Pending |
-| JSON config output | P1 | Validation | Pending |
-| `scan_stats` recorder | P1 | Stage A | Pending |
+| `--gas-cost-usd` CLI param | P0 | Stage C CLI | ✅ Completed |
+| Fill probability heuristic | P0 | Stage C CLI | ⏳ Deferred (need real fill data) |
+| Resolution lock modeling | P0 | Market metadata | ✅ Completed |
+| `--mode microstructure` | P0 | Stage C CLI | ✅ Completed |
+| `--mode sweep` with grid | P0 | Stage C CLI | ✅ Completed |
+| Capital turnover metric | P1 | SimState | ✅ Completed |
+| `max_lock_days` param sweep | P1 | Resolution lock | ✅ Completed (via `--sweep-*` params) |
+| Train/test split logic | P1 | Sweep mode | ✅ Completed (`split_by_time`) |
+| JSON config output | P1 | Validation | ✅ Completed (`recommended_config.json`) |
+| `scan_stats` recorder | P1 | Stage A | ✅ Completed (Parquet `scan_stats_v1`) |
 | Reorg detection (SQLite) | P2 | confirmed_orders | ✅ Completed |
 
 #### 10. Non-Goals
