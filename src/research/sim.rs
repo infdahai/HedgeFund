@@ -238,6 +238,9 @@ fn execute_trade(
 
     state.balance -= total_spend;
     state.locked_balance += total_spend;
+    if state.locked_balance > state.locked_balance_max {
+        state.locked_balance_max = state.locked_balance;
+    }
     state.total_txs += 1;
     if net_profit > 0.0 {
         state.winning_txs += 1;
@@ -267,6 +270,11 @@ fn execute_trade(
         expected_profit: net_profit,
     };
     state.unlock_ts_us = pending.confirm_ts_us;
+    if let Some(resolution_ts_us) = market.resolution_ts_us() {
+        if resolution_ts_us > state.unlock_ts_us {
+            state.resolution_unlock_ts_us = Some(resolution_ts_us);
+        }
+    }
     state.pending_txs.push(pending);
 
     trades.push(TradeRecord {
@@ -364,13 +372,34 @@ fn apply_confirmations(state: &mut SimState, current_ts: i64) {
     });
 
     if confirmed_cost > 0.0 {
-        state.locked_balance -= confirmed_cost;
-        state.balance += confirmed_cost + confirmed_profit;
+        let resolution_locked = match state.resolution_unlock_ts_us {
+            Some(unlock_ts) => current_ts < unlock_ts,
+            None => false,
+        };
+
+        if resolution_locked {
+            state.balance += confirmed_profit;
+        } else {
+            state.locked_balance -= confirmed_cost;
+            state.balance += confirmed_cost + confirmed_profit;
+        }
+
         state.update_drawdown();
     }
 
     if state.pending_txs.is_empty() {
         state.unlock_ts_us = current_ts;
+    }
+
+    if let Some(unlock_ts) = state.resolution_unlock_ts_us {
+        if current_ts >= unlock_ts {
+            state.resolution_unlock_ts_us = None;
+            state.locked_balance = 0.0;
+        }
+    }
+
+    if state.locked_balance > state.locked_balance_max {
+        state.locked_balance_max = state.locked_balance;
     }
 }
 

@@ -55,6 +55,9 @@ pub(crate) struct MicrostructureReport {
     pub(crate) spread_p95: f64,
     pub(crate) slippage_100_shares: f64,
     pub(crate) opportunity_frequency_per_hour: f64,
+    pub(crate) opportunity_avg_duration_ms: f64,
+    pub(crate) opportunity_p95_duration_ms: f64,
+    pub(crate) opportunity_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +75,7 @@ pub(crate) struct SimState {
     pub(crate) locked_balance: f64,
     pub(crate) inventory: HashMap<String, f64>,
     pub(crate) unlock_ts_us: i64,
+    pub(crate) resolution_unlock_ts_us: Option<i64>,
     pub(crate) pending_txs: Vec<PendingTx>,
     pub(crate) total_txs: u64,
     pub(crate) total_fees: f64,
@@ -84,6 +88,7 @@ pub(crate) struct SimState {
     pub(crate) total_traded_notional: f64,
     pub(crate) locked_time_weighted_sum: f64,
     pub(crate) last_update_ts_us: i64,
+    pub(crate) locked_balance_max: f64,
 }
 
 impl SimState {
@@ -93,6 +98,7 @@ impl SimState {
             locked_balance: 0.0,
             inventory: HashMap::new(),
             unlock_ts_us: 0,
+            resolution_unlock_ts_us: None,
             pending_txs: Vec::new(),
             total_txs: 0,
             total_fees: 0.0,
@@ -105,6 +111,7 @@ impl SimState {
             total_traded_notional: 0.0,
             locked_time_weighted_sum: 0.0,
             last_update_ts_us: 0,
+            locked_balance_max: 0.0,
         }
     }
 

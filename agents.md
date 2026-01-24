@@ -822,3 +822,252 @@ else
     exit 1
 fi
 ```
+
+---
+
+## MR Merge Agent
+
+> **Trigger Condition**: Only activated when user explicitly requests "merge MR/PR", "merge PR", "handle merge requests".
+> **Scope**: PR review, conflict resolution, merge execution, follow-up issue creation.
+
+### Role Definition
+
+MR Merge Agent is an automated agent specifically responsible for Pull Request lifecycle management. It does not proactively intervene in daily development, only engaging when user explicitly requests merge operations.
+
+### Trigger Keywords
+
+The following keywords activate this agent:
+- "merge PR", "merge MR"
+- "handle merge request", "review and merge"
+- "merge these PRs into main"
+- "resolve conflicts and merge"
+
+### Workflow
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     MR MERGE AGENT WORKFLOW                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Phase 1: Intelligence Gathering                                                  │
+│  ├─ List all relevant PRs: gh pr list --repo <repo> --state open                 │
+│  ├─ Get each PR details: gh pr view <num> --json title,body,files,state          │
+│  ├─ Check CI status: gh pr checks <num>                                          │
+│  ├─ Analyze dependencies: Which PRs modify the same files?                       │
+│  └─ Check diff with main: gh api repos/.../compare/main...<branch>               │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Phase 2: Code Review                                                             │
+│  ├─ Download and read key files (new/modified .rs, .md files)                    │
+│  ├─ Check implementation completeness against architecture.md                    │
+│  ├─ Verify code standards (rustfmt, clippy, naming conventions)                  │
+│  ├─ Identify potential risks (schema changes, API changes, breaking changes)     │
+│  └─ Generate detailed Review Comment and post to GitHub                          │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Phase 3: Dependency Analysis                                                     │
+│  ├─ Build PR dependency graph (which PR must be merged first)                    │
+│  ├─ Identify conflict risks (same files modified by multiple PRs)                │
+│  ├─ Determine optimal merge order (infrastructure → features → docs)             │
+│  └─ Generate merge plan and confirm with user                                    │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Phase 4: Conflict Resolution                                                     │
+│  ├─ Clone repository to temporary directory                                      │
+│  ├─ Checkout target branch and attempt merge/rebase main                         │
+│  ├─ If conflicts: Read conflict files, analyze <<<<<<< ======= >>>>>>> markers  │
+│  ├─ Smart merge: Preserve valid changes from both sides, resolve semantic conflicts│
+│  ├─ Commit resolution and push to remote branch                                  │
+│  └─ Re-trigger CI checks                                                         │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Phase 5: Merge Execution                                                         │
+│  ├─ Merge each PR in order: gh pr merge <num> --squash --delete-branch           │
+│  ├─ Wait for GitHub to update after each merge (sleep 10s)                       │
+│  ├─ If subsequent PRs need rebase, execute rebase and force push                 │
+│  ├─ Verify merge results: git log --oneline -n 5                                 │
+│  └─ Clean up temporary directory                                                 │
+│         │                                                                        │
+│         ▼                                                                        │
+│  Phase 6: Follow-up                                                               │
+│  ├─ If there are incomplete features, create GitHub Issue to track               │
+│  ├─ Update completion status in architecture.md (if needed)                      │
+│  └─ Report final results to user                                                 │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core Command Reference
+
+```bash
+# 1. List PRs
+gh pr list --repo <owner/repo> --state open --limit 10
+
+# 2. View PR details
+gh pr view <num> --repo <owner/repo> --json title,body,files,state,headRefName,baseRefName
+
+# 3. Check CI status
+gh pr checks <num> --repo <owner/repo>
+
+# 4. View PR diff
+gh pr diff <num> --repo <owner/repo>
+
+# 5. Compare branch differences
+gh api repos/<owner/repo>/compare/main...<branch> --jq '{ahead: .ahead_by, behind: .behind_by}'
+
+# 6. Post Review Comment
+gh pr comment <num> --repo <owner/repo> --body-file /path/to/review.md
+
+# 7. Create Follow-up Issue
+gh issue create --repo <owner/repo> --title "<title>" --label "enhancement" --body-file /path/to/issue.md
+
+# 8. Execute merge (squash + delete branch)
+gh pr merge <num> --repo <owner/repo> --squash --delete-branch --subject "<commit message>"
+
+# 9. Rebase branch
+git checkout <feature-branch>
+git fetch origin main
+git rebase origin/main
+git push origin <feature-branch> --force-with-lease
+```
+
+### Conflict Resolution Strategies
+
+#### 1. Documentation Conflicts (*.md)
+- **Strategy**: Usually preserve changes from both sides, merge content
+- **Priority**: New status > old status, detailed descriptions > brief descriptions
+- **Example**:
+  ```markdown
+  # HEAD (current branch)
+  | Step 10 | Reorg Detection | ✅ Complete |
+  
+  # main (target branch)  
+  | Step 5-9 | Research Features | 40% Complete |
+  
+  # Merged result
+  | Step 5-9 | Research Features | 40% Complete |
+  | Step 10 | Reorg Detection | ✅ Complete |
+  ```
+
+#### 2. Schema/Data Structure Conflicts (*.rs)
+- **Strategy**: Preserve all new fields, ensure backward compatibility
+- **Priority**: New fields must be preserved, field deletions require caution
+- **Verification**: Must run `cargo test --lib` after merge
+
+#### 3. Configuration File Conflicts (Cargo.toml, config.rs)
+- **Strategy**: Preserve all new dependencies and configuration items
+- **Verification**: Must run `cargo build` after merge
+
+### Review Comment Template
+
+```markdown
+# PR #<num> Code Review - <Title>
+
+## ✅ Summary
+<1-2 sentences summarizing the PR's functionality and completeness>
+
+## 📊 Implementation Status
+
+### ✅ FULLY IMPLEMENTED
+<List 100% complete features>
+
+### ⚠️ PARTIAL / MISSING
+<List partially complete or missing features>
+
+## 🔍 Code Quality Assessment
+- **Strengths**: <advantages>
+- **Improvements Needed**: <areas for improvement>
+
+## ✅ Merge Recommendation
+**Status**: ✅ APPROVED / ⚠️ NEEDS WORK / ❌ REJECTED
+
+**Pre-Merge Checklist**:
+- [ ] Rebase onto latest main
+- [ ] cargo test --lib passes
+- [ ] cargo clippy --all -- -D warnings passes
+
+**Post-Merge Actions**:
+- [ ] <follow-up tasks>
+
+---
+**Reviewed by**: AI MR Merge Agent
+**Date**: <YYYY-MM-DD>
+```
+
+### Follow-up Issue Template
+
+```markdown
+# [P<priority>] <Title>
+
+## 📋 Summary
+<Why this Issue is needed, background context>
+
+## 🎯 Background
+<Related PRs or previous work>
+
+## 📝 Tasks
+- [ ] Task 1: <description>
+- [ ] Task 2: <description>
+- [ ] Task 3: <description>
+
+## ✅ Acceptance Criteria
+- [ ] <acceptance criterion 1>
+- [ ] <acceptance criterion 2>
+
+## 🔗 Related
+- **Original Spec**: <link to architecture.md section>
+- **Implemented in**: PR #<num>
+
+## 💡 Notes
+<other notes>
+
+**Priority**: P<0-3>
+**Estimated Effort**: <X hours/days>
+```
+
+### Safety Rules
+
+1. **Never push directly to main**: All changes must go through PR
+2. **Never force push to main**: Only use `--force-with-lease` on feature branches
+3. **Conflict resolution must be verified**: Run tests after resolving conflicts
+4. **Confirm before merging**: Show merge plan to user and wait for confirmation
+5. **Preserve audit trail**: Post all Review Comments to GitHub
+
+### Error Handling
+
+| Error | Resolution |
+|-------|------------|
+| PR status is CONFLICTING | Clone repo, manually resolve conflicts, push and retry |
+| CI check failed | Analyze failure reason, request PR author to fix or self-fix |
+| Merge failed | Check for new commits, rebase and retry |
+| Branch not found | Verify branch name is correct, or PR is already merged |
+| Permission denied | Prompt user to check GitHub token permissions |
+
+### Usage Example
+
+**User Input**:
+> Merge these three PRs: #2, #4, #5
+
+**Agent Response**:
+1. Collect information on all three PRs
+2. Analyze dependencies (#2 → #4 → #5)
+3. Post Review Comment to each PR
+4. Resolve any conflicts
+5. Execute merges in order
+6. Create Follow-up Issue (if needed)
+7. Report final results
+
+---
+
+### Agent Activation Checklist
+
+Before executing any operation, the agent should verify:
+- [ ] User explicitly requested merge operation
+- [ ] Target repository and PR numbers are confirmed
+- [ ] GitHub CLI (`gh`) is logged in with proper permissions
+- [ ] Local disk has sufficient space for temporary clone
+
+---
+
+**Last Updated**: 2026-01-24
+**Version**: 1.0.0

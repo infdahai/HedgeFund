@@ -115,18 +115,21 @@ pub(crate) fn write_microstructure_report(
     }
 
     let mut contents = String::from(
-        "market_id,liquidity_availability_pct,scan_skip_rate,spread_p50,spread_p95,slippage_100_shares,opportunity_frequency_per_hour\n",
+        "market_id,liquidity_availability_pct,scan_skip_rate,spread_p50,spread_p95,slippage_100_shares,opportunity_frequency_per_hour,opportunity_avg_duration_ms,opportunity_p95_duration_ms,opportunity_count\n",
     );
     for report in reports {
         contents.push_str(&format!(
-            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.3},{}\n",
             report.market_id,
             report.liquidity_availability_pct,
             report.scan_skip_rate,
             report.spread_p50,
             report.spread_p95,
             report.slippage_100_shares,
-            report.opportunity_frequency_per_hour
+            report.opportunity_frequency_per_hour,
+            report.opportunity_avg_duration_ms,
+            report.opportunity_p95_duration_ms,
+            report.opportunity_count
         ));
     }
 
@@ -167,14 +170,17 @@ pub(crate) fn print_microstructure_summary(reports: &[MicrostructureReport]) {
     println!("  microstructure_reports: {}", reports.len());
     for report in reports {
         println!(
-            "  micro {} liquidity_pct {:.2} scan_skip_rate {:.2} spread_p50 {:.4} spread_p95 {:.4} slippage_100 {:.4} opps/hr {:.4}",
+            "  micro {} liquidity_pct {:.2} scan_skip_rate {:.2} spread_p50 {:.4} spread_p95 {:.4} slippage_100 {:.4} opps/hr {:.4} opp_avg_ms {:.1} opp_p95_ms {:.1} opp_count {}",
             report.market_id,
             report.liquidity_availability_pct,
             report.scan_skip_rate,
             report.spread_p50,
             report.spread_p95,
             report.slippage_100_shares,
-            report.opportunity_frequency_per_hour
+            report.opportunity_frequency_per_hour,
+            report.opportunity_avg_duration_ms,
+            report.opportunity_p95_duration_ms,
+            report.opportunity_count
         );
     }
 }
