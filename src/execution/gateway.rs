@@ -214,6 +214,24 @@ impl OrderGateway {
         Ok(())
     }
 
+    async fn acquire_with_ttl(&self, intent: &OrderIntent) -> Result<()> {
+        let ttl = match intent.priority {
+            crate::types::OrderPriority::Critical => std::time::Duration::from_millis(50),
+            crate::types::OrderPriority::High => std::time::Duration::from_millis(100),
+            crate::types::OrderPriority::Medium => std::time::Duration::from_millis(150),
+            crate::types::OrderPriority::Low => std::time::Duration::from_millis(250),
+        };
+
+        let acquired = self.rate_limiter.acquire_with_timeout(ttl).await;
+        if !acquired {
+            return Err(Error::RateLimitExceeded {
+                retry_after_ms: ttl.as_millis() as u64,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn submit_order(
         &self,
         intent: OrderIntent,
@@ -250,7 +268,7 @@ impl OrderGateway {
             order_size_usdt,
         )?;
 
-        self.rate_limiter.acquire().await;
+        self.acquire_with_ttl(&intent).await?;
 
         let order = Order::new(
             self.effective_maker(),

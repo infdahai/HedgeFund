@@ -29,6 +29,9 @@ struct MicroTotals {
     spreads: Vec<f64>,
     slippage_rates: Vec<f64>,
     opportunity_ticks: u64,
+    opportunity_durations_ms: Vec<f64>,
+    active_opportunity_start: Option<i64>,
+    opportunity_count: u64,
     first_ts_us: Option<i64>,
     last_ts_us: Option<i64>,
 }
@@ -84,7 +87,24 @@ impl MicroTotals {
             if yes.best_ask > 0.0 && no.best_ask > 0.0 {
                 if yes.best_ask + no.best_ask < 1.0 - config.min_profit_rate {
                     totals.opportunity_ticks += 1;
+                    if totals.active_opportunity_start.is_none() {
+                        totals.active_opportunity_start = Some(tick.ts_us);
+                        totals.opportunity_count += 1;
+                    }
+                } else if let Some(start_ts) = totals.active_opportunity_start.take() {
+                    let duration_ms = ((tick.ts_us - start_ts) as f64) / 1000.0;
+                    if duration_ms >= 0.0 {
+                        totals.opportunity_durations_ms.push(duration_ms);
+                    }
                 }
+            }
+        }
+
+        if let Some(start_ts) = totals.active_opportunity_start.take() {
+            let end_ts = totals.last_ts_us.unwrap_or(start_ts);
+            let duration_ms = ((end_ts - start_ts) as f64) / 1000.0;
+            if duration_ms >= 0.0 {
+                totals.opportunity_durations_ms.push(duration_ms);
             }
         }
 
@@ -101,6 +121,8 @@ impl MicroTotals {
         let spread_p50 = percentile(&mut self.spreads, 0.50);
         let spread_p95 = percentile(&mut self.spreads, 0.95);
         let slippage_100 = percentile(&mut self.slippage_rates, 0.50);
+        let opportunity_avg_duration_ms = average(&self.opportunity_durations_ms);
+        let opportunity_p95_duration_ms = percentile(&mut self.opportunity_durations_ms, 0.95);
 
         let hours = match (self.first_ts_us, self.last_ts_us) {
             (Some(start), Some(end)) if end > start => {
@@ -122,6 +144,9 @@ impl MicroTotals {
             spread_p95,
             slippage_100_shares: slippage_100,
             opportunity_frequency_per_hour: opp_frequency,
+            opportunity_avg_duration_ms,
+            opportunity_p95_duration_ms,
+            opportunity_count: self.opportunity_count,
         }
     }
 }
@@ -153,4 +178,11 @@ fn percentile(values: &mut Vec<f64>, quantile: f64) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let idx = ((values.len() - 1) as f64 * quantile).round() as usize;
     values.get(idx).copied().unwrap_or(0.0)
+}
+
+fn average(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().sum::<f64>() / values.len() as f64
 }

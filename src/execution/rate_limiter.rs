@@ -3,6 +3,8 @@ use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
 
 pub struct RateLimiter {
     inner: Arc<GovRateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
@@ -26,6 +28,16 @@ impl RateLimiter {
 
     pub async fn acquire(&self) {
         self.inner.until_ready().await;
+    }
+
+    pub async fn acquire_with_timeout(&self, timeout_duration: Duration) -> bool {
+        if timeout_duration.is_zero() {
+            return self.try_acquire();
+        }
+
+        timeout(timeout_duration, self.inner.until_ready())
+            .await
+            .is_ok()
     }
 
     pub fn try_acquire(&self) -> bool {
