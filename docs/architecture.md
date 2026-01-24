@@ -2278,7 +2278,7 @@ This section defines the **exact execution order** for remaining work. Follow th
 | **Stage A: Parquet Recorder** | ✅ | ✅ | ✅ | Complete (incl. best-overpay columns) |
 | **Stage C: Research CLI** | ✅ | ✅ | ✅ | Complete (gas/fill/resolution lock) |
 | **Section 12: CI/CD** | ✅ | ✅ | ✅ | Complete (quick-check.yml) |
-| **P2: Strategy Iteration** | ✅ | 40% | - | Steps 1-4 done, Steps 5-10 pending |
+| **P2: Strategy Iteration** | ✅ | ✅ | ✅ | Complete (Steps 1-10 all done) |
 | **P2: Reorg Detection (SQLite schema)** | ✅ | ✅ | ✅ | Complete |
 | Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
 | Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
@@ -2292,12 +2292,12 @@ This section defines the **exact execution order** for remaining work. Follow th
 | 3 | Fill probability filter | ✅ Complete | `src/research/sim.rs:11` `LIQUIDITY_FILL_BUFFER = 0.8` |
 | 3.5 | Resolution lock modeling | ✅ Complete | `src/research/sim.rs:12,187-198` `MIN_ANNUAL_ROI = 0.20` |
 | 4 | `scan_stats` Parquet writer | ✅ Complete | `src/data/recorder/parquet.rs` with best_overpay columns |
-| 5 | `--mode microstructure` | 🔶 Pending | See Implementation Spec below |
-| 6 | `--mode sweep` grid search | 🔶 Pending | See Implementation Spec below |
-| 7 | Capital turnover metric | 🔶 Pending | See Implementation Spec below |
-| 8 | Train/test validation | 🔶 Pending | See Implementation Spec below |
-| 9 | JSON config output | 🔶 Pending | See Implementation Spec below |
-| 10 | Reorg detection (SQLite) | 🔶 Pending | See Implementation Spec below |
+| 5 | `--mode microstructure` | ✅ Complete | `src/research/microstructure.rs` |
+| 6 | `--mode sweep` grid search | ✅ Complete | `src/research/sweep.rs:39-136` |
+| 7 | Capital turnover metric (ROCE) | ✅ Complete | `src/research/report.rs:34-38` |
+| 8 | Train/test validation | ✅ Complete | `src/research/sweep.rs:138-160` `split_by_time()` |
+| 9 | JSON config output | ✅ Complete | `src/research/report.rs:238-265` `write_recommended_config()` |
+| 10 | Reorg detection (SQLite) | ✅ Complete | `src/data/recorder/mod.rs:164-189` `apply_migrations()` |
 
 #### Execution Order (Step-by-Step)
 
