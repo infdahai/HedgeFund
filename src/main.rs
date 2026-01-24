@@ -23,7 +23,7 @@ use opinion_hft::strategy::market_scanner::MarketScanner;
 use opinion_hft::strategy::orderbook_store::LocalOrderbookStore;
 use opinion_hft::telemetry::init_telemetry;
 use opinion_hft::types::{
-    CrossChainSignal, EventEnvelope, MarketTick, OrderUpdate, StrategyCommand,
+    CrossChainSignal, EventEnvelope, MarketTick, OrderIntent, OrderUpdate, StrategyCommand,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -50,6 +50,19 @@ fn now_unix_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+async fn send_signal(
+    event_tx: &tokio::sync::mpsc::Sender<EventEnvelope>,
+    source: &str,
+    intent: OrderIntent,
+) -> std::result::Result<(), tokio::sync::mpsc::error::SendError<EventEnvelope>> {
+    let signal = CrossChainSignal {
+        source: source.to_string(),
+        intent,
+        received_at: Instant::now(),
+    };
+    event_tx.send(EventEnvelope::Signal(signal)).await
 }
 
 #[tokio::main]
@@ -305,27 +318,27 @@ async fn main() -> Result<()> {
     let order_queue_execute = order_queue.clone();
     let gateway_execute = gateway.clone();
     let rate_limiter_execute = rate_limiter.clone();
+    let order_ttl = execution_config.order_ttl;
     tokio::spawn(async move {
-        const ORDER_TTL: Duration = Duration::from_millis(50);
         loop {
             let Some(order) = order_queue_execute.pop() else {
                 tokio::time::sleep(Duration::from_millis(2)).await;
                 continue;
             };
 
-            if order.enqueue_time.elapsed() > ORDER_TTL {
+            if order.enqueue_time.elapsed() > order_ttl {
                 warn!(
                     market_id = %order.order.market_id,
-                    ttl_ms = ORDER_TTL.as_millis(),
+                    ttl_ms = order_ttl.as_millis(),
                     "dropping expired order"
                 );
                 continue;
             }
 
-            if !rate_limiter_execute.acquire_with_timeout(ORDER_TTL).await {
+            if !rate_limiter_execute.acquire_with_timeout(order_ttl).await {
                 warn!(
                     market_id = %order.order.market_id,
-                    ttl_ms = ORDER_TTL.as_millis(),
+                    ttl_ms = order_ttl.as_millis(),
                     "rate limit backlog too high; dropping order"
                 );
                 continue;
@@ -610,13 +623,12 @@ async fn main() -> Result<()> {
                     neg_risk_found += 1;
                     info!("📊 NEG-RISK FOUND: {}", opp.summary());
                     for intent in opportunity_to_order_intents(&opp) {
-                        let signal = CrossChainSignal {
-                            source: "local-scan".to_string(),
-                            intent,
-                            received_at: Instant::now(),
-                        };
-                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
-                            error!("Failed to send signal to strategy engine: {}", e);
+                        if let Err(e) = send_signal(&event_tx_scanner, "local-scan", intent).await {
+                            error!(
+                                error = %e,
+                                "failed to send signal to strategy engine; stopping scan loop"
+                            );
+                            return;
                         }
                     }
                 }
@@ -770,13 +782,12 @@ async fn main() -> Result<()> {
                     info!("🚀 ARBITRAGE FOUND: {}", opp.summary());
 
                     for intent in opportunity_to_order_intents(&opp) {
-                        let signal = CrossChainSignal {
-                            source: "local-scan".to_string(),
-                            intent,
-                            received_at: Instant::now(),
-                        };
-                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
-                            error!("Failed to send signal to strategy engine: {}", e);
+                        if let Err(e) = send_signal(&event_tx_scanner, "local-scan", intent).await {
+                            error!(
+                                error = %e,
+                                "failed to send signal to strategy engine; stopping scan loop"
+                            );
+                            return;
                         }
                     }
                 }
@@ -793,13 +804,12 @@ async fn main() -> Result<()> {
                     mint_sell_found += 1;
                     info!("💰 MINT-SELL FOUND: {}", opp.summary());
                     for intent in opportunity_to_order_intents(&opp) {
-                        let signal = CrossChainSignal {
-                            source: "local-scan".to_string(),
-                            intent,
-                            received_at: Instant::now(),
-                        };
-                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
-                            error!("Failed to send signal to strategy engine: {}", e);
+                        if let Err(e) = send_signal(&event_tx_scanner, "local-scan", intent).await {
+                            error!(
+                                error = %e,
+                                "failed to send signal to strategy engine; stopping scan loop"
+                            );
+                            return;
                         }
                     }
                 }

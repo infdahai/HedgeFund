@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{TimeZone, Utc};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use sysinfo::{Pid, ProcessExt, System, SystemExt};
+use sysinfo::{Pid, System};
 use tracing::info;
 
 use crate::strategy::arbitrage::ArbitrageConfig;

@@ -359,6 +359,9 @@ pub struct ExecutionConfig {
     /// Maximum orders in priority queue
     pub max_queue_size: usize,
 
+    /// Max time to keep an order in the execution queue
+    pub order_ttl: Duration,
+
     /// Order expiration buffer (added to current time)
     pub order_expiration_buffer: Duration,
 
@@ -491,6 +494,7 @@ impl Default for ExecutionConfig {
             rate_limit_tps: DEFAULT_RATE_LIMIT_TPS,
             burst_capacity: 3,
             max_queue_size: 1024,
+            order_ttl: Duration::from_millis(50),
             order_expiration_buffer: Duration::from_secs(300),
             health_check_interval_local: Duration::from_secs(15),
             health_check_interval_aws: Duration::from_secs(3),
@@ -628,6 +632,9 @@ impl Config {
         let data_config = DataCollectionConfig::from_env();
         let parquet_config = ParquetConfig::from_env();
         let scan_only = parse_bool_env(std::env::var("OPINION_SCAN_ONLY").ok());
+        let order_ttl_ms = std::env::var("OPINION_EXEC_ORDER_TTL_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
 
         let mut builder = Config::builder()
             .api_key(api_key)
@@ -652,6 +659,9 @@ impl Config {
         builder.config.chain.batch_buffer_ms = batch_buffer_ms;
         builder.config.chain.health_check_interval =
             Duration::from_secs(health_check_interval_secs);
+        if let Some(ttl_ms) = order_ttl_ms {
+            builder.config.execution.order_ttl = Duration::from_millis(ttl_ms);
+        }
 
         builder.scan_only(scan_only).build()
     }
@@ -752,12 +762,16 @@ fn parse_bool_env(value: Option<String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.chain.chain_id, 56);
         assert_eq!(config.execution.rate_limit_tps, 15);
+        assert_eq!(config.execution.order_ttl, Duration::from_millis(50));
         assert_eq!(config.confirmation.mode, ConfirmationMode::Hybrid);
     }
 
@@ -808,5 +822,35 @@ mod tests {
         assert_eq!(PRICE_DECIMALS, 1);
         assert!((MIN_PRICE - 0.1).abs() < f64::EPSILON);
         assert!((MAX_PRICE - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_execution_order_ttl_env_override() {
+        let _guard = ENV_MUTEX.lock().expect("env mutex");
+        let prev_api_key = std::env::var("OPINION_API_KEY").ok();
+        let prev_private_key = std::env::var("OPINION_PRIVATE_KEY").ok();
+        let prev_order_ttl = std::env::var("OPINION_EXEC_ORDER_TTL_MS").ok();
+
+        std::env::set_var("OPINION_API_KEY", "test-key");
+        std::env::set_var(
+            "OPINION_PRIVATE_KEY",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        );
+        std::env::set_var("OPINION_EXEC_ORDER_TTL_MS", "75");
+
+        let config = Config::from_env().expect("config from env");
+        assert_eq!(config.execution.order_ttl, Duration::from_millis(75));
+
+        restore_env("OPINION_API_KEY", prev_api_key);
+        restore_env("OPINION_PRIVATE_KEY", prev_private_key);
+        restore_env("OPINION_EXEC_ORDER_TTL_MS", prev_order_ttl);
+    }
+
+    fn restore_env(key: &str, value: Option<String>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
     }
 }
