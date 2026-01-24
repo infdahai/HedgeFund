@@ -1,0 +1,59 @@
+[Unit]
+Description=Opinion HFT Parquet Uploader Sidecar (Rust)
+Documentation=https://github.com/infdahai/HedgeFund
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+
+# Path to the compiled binary
+ExecStart=/opt/opinion-hft/target/release/parquet_uploader
+
+# Working directory (where data/parquet is located)
+WorkingDirectory=/opt/opinion-hft
+
+# Restart policy
+Restart=always
+RestartSec=30
+
+# Environment variables
+# S3 bucket name
+Environment=S3_BUCKET=opinion-hft-data
+
+# Local parquet directory (relative to WorkingDirectory)
+Environment=PARQUET_DIR=data/parquet
+
+# Upload interval in seconds (5 minutes)
+Environment=UPLOAD_INTERVAL_SECS=300
+
+# Delete local files after successful upload
+Environment=DELETE_AFTER_UPLOAD=true
+
+# Run as daemon (continuous loop)
+Environment=UPLOAD_MODE=daemon
+
+# Log level
+Environment=RUST_LOG=info
+
+# AWS region (optional, uses SDK default if not set)
+# Environment=AWS_REGION=ap-northeast-1
+
+# NOTE: Do NOT set AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY here!
+# Use IAM Instance Profile instead (attach role to EC2 instance)
+
+# Resource limits
+# Lower CPU priority to avoid interfering with trading process
+Nice=10
+
+# Memory limit (adjust based on your instance size)
+MemoryMax=512M
+
+# Logging
+StandardOutput=append:/var/log/opinion-hft/parquet-uploader.log
+StandardError=append:/var/log/opinion-hft/parquet-uploader.log
+
+[Install]
+WantedBy=multi-user.target

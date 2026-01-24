@@ -2280,7 +2280,7 @@ This section defines the **exact execution order** for remaining work. Follow th
 | **Section 12: CI/CD** | ✅ | ✅ | ✅ | Complete (quick-check.yml) |
 | **P2: Strategy Iteration** | ✅ | ✅ | ✅ | Complete (Steps 1-10 all done) |
 | **P2: Reorg Detection (SQLite schema)** | ✅ | ✅ | ✅ | Complete |
-| Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
+| Stage B: S3 Pipeline | ✅ | ✅ | ✅ | Complete (parquet_uploader binary) |
 | Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
 
 **Step-by-Step Status**:
@@ -2927,12 +2927,12 @@ resource "aws_cloudwatch_metric_alarm" "upload_failure" {
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Shell upload script | P0 | Pending |
-| Systemd timer config | P0 | Pending |
-| S3 bucket + IAM role | P0 | Pending |
+| Shell upload script | P0 | Replaced by Rust binary |
+| Systemd timer config | P0 | ✅ Complete (`deploy/systemd/parquet-uploader.service`) |
+| S3 bucket + IAM role | P0 | Pending (AWS setup) |
 | Log rotation for upload logs | P1 | Pending |
 | CloudWatch metrics/alarms | P1 | Pending |
-| Rust sidecar (optional) | P2 | Deferred |
+| Rust sidecar (optional) | P0 | ✅ Complete (`src/bin/parquet_uploader.rs`) |
 
 #### Non-Goals
 
