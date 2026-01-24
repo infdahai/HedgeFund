@@ -161,7 +161,7 @@ impl Recorder {
         Ok(())
     }
 
-    fn apply_migrations(&self) -> SqlResult<()> {
+    fn ensure_schema(&self) -> SqlResult<()> {
         let migrations = [
             "ALTER TABLE confirmed_orders ADD COLUMN block_number INTEGER",
             "ALTER TABLE confirmed_orders ADD COLUMN tx_hash TEXT",
@@ -232,7 +232,7 @@ impl Recorder {
                 ON confirmed_orders(timestamp_ms);
             ",
         )?;
-        self.apply_migrations()?;
+        self.ensure_schema()?;
         Ok(())
     }
 

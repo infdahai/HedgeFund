@@ -10,7 +10,7 @@ use alloy_primitives::Address;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::auth::Eip712Signer;
 use crate::auth::OrderSigner;
@@ -48,6 +48,8 @@ struct SignedOrderPayload {
     #[serde(rename = "currencyAddress")]
     currency_address: String,
 }
+
+const ORDER_SUBMIT_TTL: std::time::Duration = std::time::Duration::from_millis(50);
 
 pub struct OrderGateway {
     rest_client: OpinionClient,
@@ -215,17 +217,18 @@ impl OrderGateway {
     }
 
     async fn acquire_with_ttl(&self, intent: &OrderIntent) -> Result<()> {
-        let ttl = match intent.priority {
-            crate::types::OrderPriority::Critical => std::time::Duration::from_millis(50),
-            crate::types::OrderPriority::High => std::time::Duration::from_millis(100),
-            crate::types::OrderPriority::Medium => std::time::Duration::from_millis(150),
-            crate::types::OrderPriority::Low => std::time::Duration::from_millis(250),
-        };
-
-        let acquired = self.rate_limiter.acquire_with_timeout(ttl).await;
+        let acquired = self
+            .rate_limiter
+            .acquire_with_timeout(ORDER_SUBMIT_TTL)
+            .await;
         if !acquired {
+            warn!(
+                market_id = %intent.market_id,
+                ttl_ms = ORDER_SUBMIT_TTL.as_millis(),
+                "rate limit backlog too high; dropping order"
+            );
             return Err(Error::RateLimitExceeded {
-                retry_after_ms: ttl.as_millis() as u64,
+                retry_after_ms: ORDER_SUBMIT_TTL.as_millis() as u64,
             });
         }
 
@@ -268,6 +271,7 @@ impl OrderGateway {
             order_size_usdt,
         )?;
 
+        self.acquire_with_ttl(&intent).await?;
         self.acquire_with_ttl(&intent).await?;
 
         let order = Order::new(

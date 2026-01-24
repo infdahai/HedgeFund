@@ -95,6 +95,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rate_limiter_acquire_with_timeout() {
+        let limiter = RateLimiter::new(1, 1);
+
+        assert!(limiter.try_acquire());
+        let acquired = limiter
+            .acquire_with_timeout(Duration::from_millis(10))
+            .await;
+        assert!(!acquired);
+    }
+
+    #[tokio::test]
     async fn test_rate_limiter_is_ready() {
         let limiter = RateLimiter::new(1, 1);
 
