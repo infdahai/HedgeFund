@@ -34,6 +34,7 @@ pub struct ConfirmedOrder {
     pub position_after: U256,
     pub confirmation_time: Duration,
     pub hedge_intent: Option<OrderIntent>,
+    pub block_number: Option<u64>,
 }
 
 pub struct ConfirmationTracker {
@@ -93,16 +94,18 @@ impl ConfirmationTracker {
             None => return Ok(None),
         };
 
-        let (actual_fill, position_after) = match self.config.mode {
+        let (actual_fill, position_after, block_number) = match self.config.mode {
             ConfirmationMode::TrustWebSocket => {
                 let fill = ws_fill.unwrap_or(U256::ZERO);
                 let position_after = match pending.side {
                     OrderSide::Buy => pending.position_before.saturating_add(fill),
                     OrderSide::Sell => pending.position_before.saturating_sub(fill),
                 };
-                (fill, position_after)
+                (fill, position_after, None)
             }
             ConfirmationMode::OnChainOnly | ConfirmationMode::Hybrid => {
+                let block_number = self.chain_client.get_block_number().await.ok();
+
                 let mut position_after = U256::ZERO;
                 let mut attempts = 0;
                 let max_attempts = 3;
@@ -131,7 +134,7 @@ impl ConfirmationTracker {
                     OrderSide::Sell => pending.position_before.saturating_sub(position_after),
                 };
 
-                (actual_fill, position_after)
+                (actual_fill, position_after, block_number)
             }
         };
 
@@ -146,6 +149,7 @@ impl ConfirmationTracker {
             position_after,
             confirmation_time: pending.submitted_at.elapsed(),
             hedge_intent: pending.hedge_intent,
+            block_number,
         };
 
         self.confirmation_tx
@@ -248,6 +252,8 @@ impl ConfirmationTracker {
         // 3. Batch query
         let positions = self.chain_client.balance_of_batch(&token_ids).await?;
 
+        let block_number = self.chain_client.get_block_number().await.ok();
+
         // 4. Process results
         let mut confirmed_orders = Vec::new();
 
@@ -276,6 +282,7 @@ impl ConfirmationTracker {
                             position_after,
                             confirmation_time: pending.submitted_at.elapsed(),
                             hedge_intent: pending.hedge_intent,
+                            block_number,
                         };
 
                         let _ = self.confirmation_tx.send(confirmed.clone()).await;

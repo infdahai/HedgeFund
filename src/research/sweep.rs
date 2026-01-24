@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use sysinfo::{System, SystemExt};
-use tracing::{error, info};
 
 use crate::strategy::arbitrage::ArbitrageConfig;
 
@@ -38,26 +36,6 @@ pub(crate) fn run_sweep(
     market_metadata: &HashMap<String, i64>,
     config: &CliConfig,
 ) -> Vec<SweepResult> {
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-    let mem_before_kb = sys.used_memory();
-    info!(
-        memory_used_mb = mem_before_kb / 1024,
-        "parameter sweep started"
-    );
-
-    if let Some(max_mem_gb) = config.max_mem_gb {
-        let current_mem_gb = mem_before_kb as f64 / (1024.0 * 1024.0);
-        if current_mem_gb > max_mem_gb {
-            error!(
-                current_mem_gb = current_mem_gb,
-                max_mem_gb = max_mem_gb,
-                "memory limit exceeded, aborting sweep"
-            );
-            return Vec::new();
-        }
-    }
-
     let profit_rates = config
         .sweep_min_profit_rates
         .clone()
@@ -80,8 +58,7 @@ pub(crate) fn run_sweep(
         }
     }
 
-    let results = grid
-        .par_iter()
+    grid.par_iter()
         .map(|&(profit_rate, liquidity, gas_cost_usd)| {
             let summary = run_simulation(
                 markets,
@@ -107,18 +84,7 @@ pub(crate) fn run_sweep(
                 },
             }
         })
-        .collect();
-
-    sys.refresh_memory();
-    let mem_after_kb = sys.used_memory();
-    let mem_delta_mb = mem_after_kb.saturating_sub(mem_before_kb) / 1024;
-    info!(
-        memory_used_mb = mem_after_kb / 1024,
-        memory_delta_mb = mem_delta_mb,
-        "parameter sweep completed"
-    );
-
-    results
+        .collect()
 }
 
 pub(crate) fn split_by_time(

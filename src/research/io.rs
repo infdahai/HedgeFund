@@ -125,6 +125,7 @@ pub(crate) fn load_scan_skip_rates(config: &CliConfig) -> Result<(HashMap<String
     }
 
     let grouped = df
+        .clone()
         .lazy()
         .group_by([col("market_id")])
         .agg([

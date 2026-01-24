@@ -7,6 +7,13 @@
 ## Table of Contents
 
 1. [Architecture Overview](https://www.google.com/search?q=%23architecture-overview)
+1.1 [Architecture Outline](https://www.google.com/search?q=%23architecture-outline)
+1.2 [Design Philosophy and Quality Attributes](https://www.google.com/search?q=%23design-philosophy-and-quality-attributes)
+1.3 [Threading Model](https://www.google.com/search?q=%23threading-model)
+1.4 [Message Bus Semantics](https://www.google.com/search?q=%23message-bus-semantics)
+1.5 [Component Lifecycle](https://www.google.com/search?q=%23component-lifecycle)
+1.6 [Environment Contexts Summary](https://www.google.com/search?q=%23environment-contexts-summary)
+1.7 [Detailed Design](https://www.google.com/search?q=%23detailed-design)
 2. [Project Overview](https://www.google.com/search?q=%231-project-overview)
 3. [Research Findings](https://www.google.com/search?q=%232-research-findings)
 4. [Critical Constraints & Parameters](https://www.google.com/search?q=%233-critical-constraints--parameters)
@@ -25,110 +32,556 @@
 
 # Architecture Overview
 
+### Architecture Outline
+
+- **Data Plane**: WebSocket/REST/chain ingestion, normalization, local orderbook and market state, publish to the Event Bus.
+- **Control Plane**: Strategy evaluation, position management, and risk checks driven by ordered events.
+- **Execution Plane**: Priority queue, signer, rate limiter, order gateway, and confirmation tracker.
+- **Shared Services**: Config, cache/state, metrics/logging, and data recorder used across planes.
+- **Environment Contexts**: Live trading, scan-only, and backtest/research reuse the same core logic paths.
+
+### Design Philosophy and Quality Attributes
+
+- **Deterministic ordering**: Core decision logic consumes events in a single ordered stream to keep live and backtest parity.
+- **Performance first**: Minimize locks in hot paths, precompute EIP-712 components, batch on-chain reads, and cache market state.
+- **Data integrity > availability**: Fail fast on invalid prices/quantities and reject impossible states to avoid silent loss.
+- **Ports and adapters**: REST/WS/RPC clients are replaceable adapters; core logic depends on traits, not concrete clients.
+- **Crash-only recovery**: Unrecoverable faults abort the process and restart through the same init path using persisted state.
+
+### Threading Model
+
+- **Single-threaded core**: Strategy, risk, and execution decisions run in one ordered loop for deterministic behavior.
+- **Async I/O edges**: WS/REST/RPC clients and persistence run on async tasks and publish results to the Event Bus.
+- **Message boundaries**: Cross-thread communication uses bounded channels to prevent backpressure from blocking the core.
+- **State ownership**: Shared caches are updated by the core only; background tasks emit deltas, not in-place writes.
+
+### Message Bus Semantics
+
+- **Data messages**: Market data, orderbook diffs, and trades are broadcast and can be conflated to the latest snapshot.
+- **Command messages**: Order intents, cancels, and replaces are point-to-point with explicit acknowledgments.
+- **Event messages**: Confirmations, risk alerts, and position updates are publish/subscribe for fanout.
+- **Request/response**: Snapshot queries use `oneshot` or `watch` to avoid blocking the core loop.
+- **Backpressure rules**: Data channels are bounded and drop old updates; command/event channels are bounded but lossless.
+
+Message types (example):
+
+```rust
+pub enum BusMessage {
+    Data(DataEvent),
+    Command(Command),
+    Event(Event),
+}
+
+pub enum DataEvent {
+    OrderbookDelta,
+    TradeTick,
+    MarketSnapshot,
+}
+
+pub enum Command {
+    PlaceOrder,
+    CancelOrder,
+    ReplaceOrder,
+}
+
+pub enum Event {
+    OrderAccepted,
+    OrderFilled,
+    OrderRejected,
+    PositionUpdated,
+    RiskBreached,
+}
+```
+
+Channel sizing guidelines (tune per venue and feed volume):
+
+| Channel | Use | Capacity | Drop Policy |
+| --- | --- | --- | --- |
+| data | Market data fanout | 2048 | Drop oldest on overflow |
+| command | Order intents | 256 | Block producer (lossless) |
+| event | Fills/risk/position | 512 | Block producer (lossless) |
+| request | Snapshot queries | 1 | `oneshot` per request |
+
+Channel sizing rationale:
+
+- Data channels buffer short bursts (1-2 seconds of peak WS diffs) while preserving the freshest snapshot.
+- Command/event channels stay small to apply backpressure early and avoid hidden execution latency.
+- Recorder queues are larger to absorb storage stalls without impacting trading decisions.
+
+Current defaults in code:
+
+- WS event broadcast: 1024 (`src/data/websocket/client.rs`)
+- EventBus: 1024 (`src/data/event_bus.rs`)
+- WS command channel: 100 (`src/data/websocket/client.rs`)
+- Strategy -> execution: 100 (`src/main.rs`)
+- Confirmation events: 256 (`src/execution/confirmation.rs`)
+- Recorder queue: `OPINION_DATA_QUEUE_CAP` (default 2000) (`src/data/recorder/mod.rs`)
+
+Current implementation mapping:
+
+| Channel | Type | Module |
+| --- | --- | --- |
+| data | `broadcast::Sender<WsEvent>` | `src/data/websocket/client.rs` |
+| data | `broadcast::Sender<MarketEvent>` | `src/data/event_bus.rs` |
+| command | `mpsc::Sender<ArbitrageOpportunity>` | `src/main.rs` -> `src/execution/gateway.rs` |
+| event | `mpsc::Sender<ConfirmedOrder>` | `src/execution/confirmation.rs` |
+| event | `mpsc::Sender<RecordEvent>` | `src/data/recorder/mod.rs` |
+
+Schema versioning note:
+
+- Add `schema_version` to external-derived events (WS/REST) before publishing to the bus.
+- Store `schema_version` in recorder tables and research outputs to allow replay across code changes.
+- Bump the version on field shape changes and reject unknown versions in adapters to fail fast.
+
+Schema versioning example:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventEnvelope<T> {
+    pub schema_version: u16,
+    pub source: String,
+    pub received_ns: u64,
+    pub payload: T,
+}
+
+pub type MarketDataEnvelope = EventEnvelope<WsEvent>;
+```
+
+### Component Lifecycle
+
+Components follow a simple lifecycle state machine to support predictable startup, health checks, and recovery:
+
+| State | Meaning |
+| --- | --- |
+| PRE_INITIALIZED | Constructed, not configured |
+| READY | Configured, can start |
+| RUNNING | Operating normally |
+| DEGRADED | Operating with reduced capability (stale data, partial feeds) |
+| FAULTED | Unrecoverable error detected |
+| STOPPED | Gracefully stopped |
+| DISPOSED | Resources released |
+
+Transitions are driven by config load, connectivity, and invariant checks. FAULTED triggers crash-only restart; DEGRADED preserves observability while isolating unhealthy inputs.
+
+Recommended implementation contracts:
+
+- `Component` trait with `start`, `stop`, `reset`, `dispose`, and `state` for lifecycle control.
+- `Actor` trait with `handle(message)` for bus-dispatched logic.
+- Kernel owns component registration and serializes lifecycle transitions.
+- Shared cache/state is written by the core loop; background tasks emit deltas only.
+
+Lifecycle interfaces (Rust sketch):
+
+```rust
+pub enum ComponentState {
+    PreInitialized,
+    Ready,
+    Running,
+    Degraded,
+    Faulted,
+    Stopped,
+    Disposed,
+}
+
+pub trait Component {
+    fn start(&mut self) -> Result<(), Error>;
+    fn stop(&mut self) -> Result<(), Error>;
+    fn reset(&mut self) -> Result<(), Error>;
+    fn dispose(&mut self) -> Result<(), Error>;
+    fn state(&self) -> ComponentState;
+}
+
+pub trait Actor<M> {
+    fn handle(&mut self, message: M, ctx: &mut KernelContext) -> Result<(), Error>;
+}
+
+pub trait Kernel {
+    fn register_component(&mut self, component: Box<dyn Component>);
+    fn dispatch(&mut self, message: BusMessage);
+}
+```
+
+### Environment Contexts Summary
+
+| Context | Data Source | Execution Mode | Primary Use |
+| --- | --- | --- | --- |
+| Live | WS/REST/RPC | Real orders | Production trading |
+| Scan-only | WS/REST/RPC | Disabled (no submit) | Opportunity scanning |
+| Backtest/Research | Recorded data | Simulated execution | Strategy evaluation |
+
+Implementation mapping:
+
+| Context | Entry | Key Modules |
+| --- | --- | --- |
+| Live | `src/main.rs` | `OrderGateway`, `MarketScanner`, `WebSocketClient`, `OpinionClient` |
+| Scan-only | `OPINION_SCAN_ONLY=true` | `OrderGateway` skips submit, scanner still runs |
+| Backtest/Research | `src/strategy/backtest/mod.rs`, `src/bin/research.rs` | `strategy::core`, replay I/O |
+
+### Nautilus-Inspired Improvements (Prediction Market Fit)
+
+NautilusTrader optimizes for microsecond-class venues, while Opinion Trade is constrained by
+BNB Chain finality and 15 TPS. The architectural ideas still translate well for robustness and
+simulation fidelity. The following are the most actionable adaptations:
+
+1. **Centralized portfolio cache**
+   Unify live confirmation tracking and backtest state under a single portfolio manager. Use a
+   two-layer state model so strategy decisions can be fast without sacrificing correctness.
+
+```rust
+pub struct Portfolio {
+    pub virtual_positions: HashMap<TokenId, f64>,
+    pub confirmed_positions: HashMap<TokenId, f64>,
+    pub pending_orders: Vec<Order>,
+}
+```
+
+- Virtual layer updates on WS `status="Finish"` for fast decisions.
+- Confirmed layer updates after on-chain `balanceOf` for risk truth.
+- Reconcile on divergence and emit a risk event if drift exceeds thresholds.
+
+2. **Standardized event envelopes**
+   Record a unified event stream (inputs and outputs), not just orderbook snapshots. This keeps
+   backtests aligned with live flows and reduces overfitting.
+
+- Add `strategy_events` to recorder outputs with `SignalEvent`, `OrderEvent`, and `FillEvent`.
+- Replay recorded events through the same strategy loop used in live.
+
+3. **Lifecycle-aware health gating**
+   Use component lifecycle state and heartbeat-driven health signals to prevent trading on stale
+   data. WS interruptions should trigger a DEGRADED state and block new orders.
+
+- Health supervisor checks: WS heartbeat, stale orderbook age, RPC failures.
+- Strategy loop exits early when `MarketDataStatus != Healthy`.
+
+4. **Adapters and simulated exchange**
+   Treat execution as an adapter so backtest and live paths share the same interfaces.
+
+```rust
+#[async_trait]
+pub trait ExchangeAdapter {
+    async fn fetch_balances(&self) -> Result<Balances>;
+    async fn submit_order(&self, order: Order) -> Result<OrderId>;
+}
+```
+
+- Live adapter calls REST + EIP-712 signing.
+- Simulated adapter uses `SimState` with latency and fill logic.
+
+Priority guidance:
+
+- **P0**: Standardize event schema and recorder outputs (foundation for research + replay).
+- **P1**: Define `ExchangeAdapter` before extending `SimState`.
+- **P2**: Implement centralized portfolio cache with virtual/confirmed layers.
+
+### Detailed Design
+
+#### Goals
+
+- Preserve event-driven determinism under BNB Chain latency and 15 TPS constraints.
+- Align live execution and backtest/replay through a single event stream and common interfaces.
+- Improve robustness and simulation fidelity without microsecond-only optimizations.
+
+#### Non-Goals
+
+- Implement ring-buffer or zero-copy engine patterns.
+- Redesign all modules in one pass.
+
+#### Event Envelopes and Schema Versioning
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventEnvelope<T> {
+    pub schema_version: u16,
+    pub source: String,
+    pub received_ns: u64,
+    pub payload: T,
+}
+```
+
+Rules:
+
+- `schema_version` is required for WS/REST/chain-derived events.
+- Bump versions on required field changes or payload shape changes.
+- Reject unknown versions in adapters to fail fast.
+- Persist version in recorder outputs for replay stability.
+
+Recorder extension:
+
+- Add `strategy_events` with `SignalEvent`, `OrderEvent`, `FillEvent`, `RiskEvent`.
+- Replay events (not just snapshots) to keep backtests aligned with live flows.
+
+#### Exchange Adapter Abstraction
+
+```rust
+#[async_trait]
+pub trait ExchangeAdapter {
+    async fn fetch_balances(&self) -> Result<Balances>;
+    async fn submit_order(&self, order: Order) -> Result<OrderId>;
+    async fn cancel_order(&self, order_id: &OrderId) -> Result<()>;
+}
+```
+
+Adapters:
+
+- Live adapter wraps `OpinionClient` + `OrderGateway` + `Eip712Signer` with rate limiting.
+- Sim adapter wraps `SimState` with latency and fill modeling.
+- Strategy logic is adapter-agnostic; only the adapter changes.
+
+#### Health Supervisor and Market Data Gating
+
+```rust
+pub enum MarketDataStatus {
+    Healthy,
+    Stale,
+    Disconnected,
+}
+```
+
+Health signals:
+
+- WS heartbeat and diff arrival rate (e.g., no diffs for 3s -> Stale).
+- Orderbook freshness via `LocalOrderbookStore::last_update`.
+- RPC error rate or repeated timeouts.
+
+Gating policy:
+
+- Strategy exits early when `MarketDataStatus != Healthy`.
+- Execution rejects new orders when status is not healthy.
+- Risk manager records the breach and can trigger circuit breaker.
+
+#### Recorder Schema: Strategy Events
+
+Add a dedicated event stream table to complement `orderbook_snapshots` and `confirmed_orders`.
+
+```
+strategy_events
+- event_id (text, primary key)
+- schema_version (int)
+- source (text)              // ws, rest, chain, sim
+- received_ns (int)
+- event_type (text)          // SignalEvent | OrderEvent | FillEvent | RiskEvent
+- payload_json (text)
+- created_at_ms (int)
+```
+
+Notes:
+
+- `payload_json` stores the serialized event envelope payload for replay.
+- Use `event_type` for fast filtering without deserializing JSON.
+- Keep `received_ns` monotonic within a single run for deterministic ordering.
+
+#### Strategy Event Payload Examples
+
+```json
+{
+  "event_type": "SignalEvent",
+  "payload": {
+    "strategy_id": "arb_yesno",
+    "market_id": "12345",
+    "pair": "BTC-YES",
+    "side": "BUY",
+    "price": 0.5,
+    "size": 120.0,
+    "reason": "yes_no_sum_below_1"
+  }
+}
+```
+
+```json
+{
+  "event_type": "OrderEvent",
+  "payload": {
+    "order_id": "op_987",
+    "market_id": "12345",
+    "pair": "BTC-YES",
+    "side": "BUY",
+    "price": 0.5,
+    "size": 120.0,
+    "status": "Submitted"
+  }
+}
+```
+
+```json
+{
+  "event_type": "FillEvent",
+  "payload": {
+    "order_id": "op_987",
+    "market_id": "12345",
+    "pair": "BTC-YES",
+    "side": "BUY",
+    "expected_price": 0.5,
+    "actual_fill": "120.0",
+    "confirmation_ms": 3800
+  }
+}
+```
+
+```json
+{
+  "event_type": "RiskEvent",
+  "payload": {
+    "risk_type": "MarketDataStale",
+    "details": "no depth diffs for 3s",
+    "action": "halt_trading"
+  }
+}
+```
+
+#### Parquet Schema: strategy_events
+
+```
+strategy_events
+- event_id: string
+- schema_version: int16
+- source: string
+- received_ns: int64
+- event_type: string
+- payload_json: string
+- created_at_ms: int64
+```
+
+Use the same schema for both SQLite and Parquet to simplify replay tooling.
+
+#### Adapter Migration Plan (Incremental)
+
+1. **Phase 0: trait only**
+   - Define `ExchangeAdapter` and adapt `OrderGateway` behind it.
+2. **Phase 1: live adapter**
+   - Implement `LiveAdapter` wrapping current REST + EIP-712 + confirmation flow.
+3. **Phase 2: sim adapter**
+   - Wrap `SimState` with `SimAdapter` using the same interface.
+4. **Phase 3: strategy wiring**
+   - Strategy code depends on `ExchangeAdapter` only; environment selects adapter.
+5. **Phase 4: event replay**
+   - Backtest reads `strategy_events` and replays through the same adapter interface.
+
+#### Schema Versioning Checklist
+
+- **Bump** `schema_version` when adding a required field or changing payload shape.
+- **Keep** optional fields backwards compatible for at least one version.
+- **Reject** unknown versions in adapters (fail fast).
+- **Record** the version in `strategy_events` and `confirmed_orders` rows.
+- **Document** changes in `docs/architecture.md` and changelog.
+
 ### System Architecture Diagram
 
 ```text
-+--------------------------------------------------------------------+
-|                   OPINION TRADE HFT FRAMEWORK                      |
-+--------------------------------------------------------------------+
-|                                                                    |
-|  +--------------------------------------------------------------+  |
-|  |                         DATA PLANE                           |  |
-|  |                                                              |  |
-|  |  +-------------+  +-------------+  +----------------------+  |  |
-|  |  |  WebSocket  |  |  REST Cli   |  |    Chain Client      |  |  |
-|  |  |   Client    |  |             |  |    (Alloy)           |  |  |
-|  |  |             |  |             |  |                      |  |  |
-|  |  | market.depth|  |  /markets   |  |   balanceOf()        |  |  |
-|  |  | order.update|  | /orderbook  |  |   balanceOfBatch()   |  |  |
-|  |  | trade.record|  |   /order    |  |                      |  |  |
-|  |  |             |  | ?apikey=XXX |  |   ConditionalTokens  |  |  |
-|  |  +------+------+  +------+------+  +-----------+----------+  |  |
-|  |         |                |                     |             |  |
-|  |         +----------------+---------------------+             |  |
-|  |                          |                                   |  |
-|  |                   +------+-------+                           |  |
-|  |                   |   Event Bus  |                           |  |
-|  |                   | (broadcast)  |                           |  |
-|  |                   +------+-------+                           |  |
-|  +--------------------------+-----------------------------------+  |
-|                             |                                      |
-|                             V                                      |
-|  +--------------------------------------------------------------+  |
-|  |                       EXECUTION PLANE                        |  |
-|  |                                                              |  |
-|  |  +-------------+  +-------------+  +----------------------+  |  |
-|  |  |   EIP-712   |  | Priority Q  |  |     Rate Limiter     |  |  |
-|  |  |    Signer   |  |             |  |   (Governor GCRA)    |  |  |
-|  |  |             |  |             |  |                      |  |  |
-|  |  |  Precomputed|  | Critical -->|  |                      |  |  |
-|  |  |   -Domain   |  | High     -->|  |   15 TPS             |  |  |
-|  |  |   -TypeHash |  | Medium   -->|  |   Burst: 3           |  |  |
-|  |  |   k256 ECDSA|  | Low      -->|  |   ~15ns/check        |  |  |
-|  |  |             |  | FIFO/level  |  |   until_ready()      |  |  |
-|  |  +-------------+  +------+------+  +----------------------+  |  |
-|  |                          |                                   |  |
-|  |                          V                                   |  |
-|  |           +------------------------------+                   |  |
-|  |           |     Confirmation Tracker     |                   |  |
-|  |           |                              |                   |  |
-|  |           |  Mode: TrustWebSocket        |                   |  |
-|  |           |         |OnChainOnly|        |                   |  |
-|  |           |     Hybrid (recommended)     |                   |  |
-|  |           |                              |                   |  |
-|  |           |  1. Record position_before   |                   |  |
-|  |           |  2. Wait WS status="Finish"  |                   |  |
-|  |           |  3. Query on-chain balance   |                   |  |
-|  |           |  4. Calc position delta      |                   |  |
-|  |           |  5. Emit ConfirmationEvent   |                   |  |
-|  |           +------------------------------+                   |  |
-|  +--------------------------------------------------------------+  |
-|                                                                    |
-+--------------------------------------------------------------------+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                            OPINION TRADE HFT FRAMEWORK                           │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                              DATA PLANE                                     │
+│  │                                                                             │
+│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
+│  │   │  WebSocket      │   │   REST Client   │   │    Chain Client         │   │ │
+│  │   │  Client         │   │                 │   │    (Alloy)              │   │ │
+│  │   │                 │   │                 │   │                         │   │ │
+│  │   │ ┌─────────────┐ │   │  /markets       │   │  balanceOf()            │   │ │
+│  │   │ │ market.depth.diff │ │   │  /orderbook     │   │  balanceOfBatch()       │   │ │
+│  │   │ │ order.update│ │   │  /order         │   │                         │   │ │
+│  │   │ │ trade.record│ │   │                 │   │  ConditionalTokens      │   │ │
+│  │   │ └─────────────┘ │   │  ?apikey=XXX    │   │  (ERC-1155)             │   │ │
+│  │   └────────┬────────┘   └────────┬────────┘   └────────────┬────────────┘   │ │
+│  │            │                     │                         │                │ │
+│  │            └─────────────────────┼─────────────────────────┘                │ │
+│  │                                  ▼                                          │ │
+│  │                    ┌─────────────────────────────┐                          │ │
+│  │                    │        Event Bus            │                          │ │
+│  │                    │   (tokio::broadcast)        │                          │ │
+│  │                    └─────────────┬───────────────┘                          │ │
+│  └──────────────────────────────────┼──────────────────────────────────────────┘ │
+│                                     │                                            │
+│                                     ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                            EXECUTION PLANE                                  │
+│  │                                                                             │
+│  │   ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────┐   │ │
+│  │   │   EIP-712       │   │  Priority Queue │   │    Rate Limiter         │   │ │
+│  │   │   Signer        │   │                 │   │    (Governor GCRA)      │   │ │
+│  │   │                 │   │                 │   │                         │   │ │
+│  │   │  Precomputed:   │   │  Critical ━━━▶ │   │                         │   │ │
+│  │   │  • Domain Sep   │   │  High     ━━━▶ │   │  15 TPS                 │   │ │
+│  │   │  • Type Hash    │   │  Medium   ━━━▶ │   │  Burst: 3               │   │ │
+│  │   │                 │   │  Low      ━━━▶ │   │  ~15ns/check            │   │ │
+│  │   │  k256 ECDSA     │   │  FIFO per level │   │  until_ready().await    │   │ │
+│  │   └─────────────────┘   └────────┬────────┘   └─────────────────────────┘   │ │
+│  │                                  │                                          │ │
+│  │                                  ▼                                          │ │
+│  │             ┌───────────────────────────────────────────────┐               │ │
+│  │             │            Confirmation Tracker               │               │ │
+│  │             │                                               │               │ │
+│  │             │  ┌─────────────────────────────────────────┐  │               │ │
+│  │             │  │  Mode: TrustWebSocket | OnChainOnly |   │  │               │ │
+│  │             │  │       Hybrid (recommended)              │  │               │ │
+│  │             │  └─────────────────────────────────────────┘  │               │ │
+│  │             │                                               │               │ │
+│  │             │  1. Record position_before                    │               │ │
+│  │             │  2. Wait for WS status="Finish"               │               │ │
+│  │             │  3. Query on-chain balanceOf()                │               │ │
+│  │             │  4. Calculate: position_after - position_before│              │ │
+│  │             │  5. Emit ConfirmationEvent                    │               │ │
+│  │             └───────────────────────────────────────────────┘               │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                            SHARED SERVICES                                  │ │
+│  │  Config | Cache/State | Metrics/Logging | Recorder | Feature Flags           │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │             ENVIRONMENT CONTEXTS: Live | Scan-only | Backtest/Research        │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Module Interactions
 
 ```text
-+-----------+  OrderIntent  +----------+
-| Strategy  | ------------> | Priority |
-|           |               |  Queue   |
-+-----------+               +----+-----+
-                                 |
-                                 V
-+-----------+              +-----------+
-|  EIP-712  | <---sign---- |   Order   |
-|  Signer   |              |  Gateway  |
-+-----------+              +-----+-----+
-                                 |
-        +-----------+------------+-----------+
-        |           |            |           |
-        V           V            V           |
-   +---------+ +---------+ +-----------+     |
-   |  Rate   | |  REST   | | Confirma- |     |
-   | Limiter | | Client  | |   tion    |     |
-   | (wait)  | | (post)  | |  Tracker  | <---+ (register)
-   +---------+ +----+----+ +-----+-----+
-                    |            ^
-                    |            | (trigger)
-                    V      +-----+-----+
-               +-------+   |    WS     |
-               |  API  |-->|  Client   |
-               +-------+   +-----------+
-                                 |
-                           +-----+-----+
-                           |   Chain   |
-                           |   Client  |
-                           +-----+-----+
-                                 |
-                                 V
-                           +-----------+
-                           | Confirmed |
-                           |   Event   |
-                           +-----------+
+┌─────────────┐     OrderIntent      ┌─────────────────┐
+│   Strategy  │ ──────────────────▶  │  Priority Queue │
+│   (User)    │                      │                 │
+└─────────────┘                      └────────┬────────┘
+                                              │
+                                              ▼
+┌─────────────┐                      ┌─────────────────┐
+│  EIP-712    │ ◀─── sign_order ──── │  Order Gateway  │
+│  Signer     │                      │  (orchestrator) │
+└─────────────┘                      └────────┬────────┘
+                                              │
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+     ┌─────────────────┐             ┌─────────────────┐             ┌─────────────────┐
+      │  Rate Limiter   │             │   REST Client   │             │ Confirmation    │
+      │  (wait permit)  │ ─────────▶  │   POST /order   │ ─────────▶  │ Tracker         │
+      └─────────────────┘             └─────────────────┘             └────────┬────────┘
+                                                                              │
+                                    ┌───────────────────────────────────────┘
+                                    ▼
+                           ┌─────────────────┐             ┌─────────────────┐
+                           │   WebSocket     │ ─────────▶  │   Chain Client  │
+                           │ (status=Finish) │ trigger     │   balanceOf()   │
+                            └─────────────────┘             └─────────────────┘
+
 ```
 
+### Event Flow Sequence (Live)
 
+```text
+WebSocketClient
+   │ WsEvent::MarketData / MarketDepthDiff
+   ▼
+LocalOrderbookStore (src/strategy/orderbook_store.rs)
+   ▼
+MarketScanner / Strategy Loop
+   │ mpsc::Sender<ArbitrageOpportunity>
+   ▼
+OrderGateway → ConfirmationTracker → Recorder
+```
+
+Note: today the WS consumer updates the orderbook store directly (see `src/main.rs`).
+As the Message Bus matures, route WsEvent/MarketEvent through the bus so the store,
+scanner, and telemetry can all subscribe without duplicated parsing.
 
 ### Data Flow Summary
 
@@ -516,7 +969,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │ WebSocket      │    │ REST Poller    │    │ Chain Subscriber │     │  │
 │  │  │ Client         │    │ (Fallback)     │    │ (Position Query) │     │  │
 │  │  │                │    │                │    │                  │     │  │
-│  │  │ • market.depth.diff  │    │ • /markets     │    │ • balanceOf()    │     │  │
+│  │  │ • depth.diff     │    │ • /markets     │    │ • balanceOf()    │     │  │
 │  │  │ • trade.order  │    │ • /orderbook   │    │ • event logs     │     │  │
 │  │  │ • trade.record │    │                │    │                  │     │  │
 │  │  └───────┬────────┘    └───────┬────────┘    └────────┬─────────┘     │  │
@@ -564,13 +1017,20 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │  │               Confirmation Tracker (Hybrid)                    │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Trigger: WebSocket trade.order.update (status = "Finish")     │  │   │
-│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                     │  │   │
+│  │  │  ⚠️ DO NOT trust WebSocket quantity data!                      │  │   │
 │  │  │                                                                │  │   │
 │  │  │  Source of Truth: On-chain balanceOf() query                   │  │   │
 │  │  │  Latency: 3-5 seconds (unavoidable chain confirmation)         │  │   │
 │  │  └────────────────────────────────────────────────────────────────┘  │   │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │                         SHARED SERVICES                               │  │
+│  │  Config | Cache/State | Metrics/Logging | Recorder | Feature Flags     │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │           ENVIRONMENT CONTEXTS: Live | Scan-only | Backtest/Research    │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ```
@@ -580,6 +1040,8 @@ println!("Proxy/Safe: {}", proxy_address);
 * **Data Plane**: Ingests external data streams (WebSocket, REST, Blockchain). No dependencies on Control/Execution planes.
 * **Control Plane**: Makes trading decisions (Strategy Engine, Position Manager, Risk Manager).
 * **Execution Plane**: Executes orders with rate limiting and confirmation using `tokio::broadcast` for the Event Bus.
+* **Shared Services**: Config, cache/state, metrics/logging, and recorder provide cross-plane support.
+* **Environment Contexts**: Live, scan-only, and backtest/research reuse the same core flow with different adapters.
 
 ### 4.2 Order Confirmation Flow
 
@@ -600,8 +1062,8 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            WebSocket: trade.order.update                           │     │
 │  │            Wait for: status = "Finish"                             │     │
 │  │                                                                    │     │
-│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)        │     │
-│  │  ✅ ONLY USE: status field as trigger signal                       │     │
+│  │  ⚠️ IGNORE: order.Shares, order.FilledShares (UNRELIABLE!)         │     │
+│  │  ✅ ONLY USE: status field as trigger signal                        │     │
 │  └────────────────────────────────┬───────────────────────────────────┘     │
 │                                   │ status = "Finish"                       │
 │                                   ▼                                         │
@@ -609,7 +1071,7 @@ println!("Proxy/Safe: {}", proxy_address);
 │  │            On-Chain Query (ONLY RELIABLE SOURCE)                   │     │
 │  │                                                                    │     │
 │  │  Contract: ConditionalTokens (ERC-1155)                            │     │
-│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774            │     │
+│  │  Address:  0xAD1a38cEc043e70E83a3eC30443dB285ED10D774              │     │
 │  │  Method:   balanceOf(account, positionId) → uint256                │     │
 │  │                                                                    │     │
 │  │  Latency: 3-5 seconds (chain confirmation, UNAVOIDABLE)            │     │
@@ -1817,6 +2279,7 @@ This section defines the **exact execution order** for remaining work. Follow th
 | **Stage C: Research CLI** | ✅ | ✅ | ✅ | Complete (gas/fill/resolution lock) |
 | **Section 12: CI/CD** | ✅ | ✅ | ✅ | Complete (quick-check.yml) |
 | **P2: Strategy Iteration** | ✅ | 40% | - | Steps 1-4 done, Steps 5-10 pending |
+| **P2: Reorg Detection (SQLite schema)** | ✅ | ✅ | ✅ | Complete |
 | Stage B: S3 Pipeline | ✅ | 0% | - | P3, deferred |
 | Stage D/E: Optimization | ✅ | 0% | - | P4, deferred |
 
@@ -3090,7 +3553,7 @@ Without `scan_stats`:
 | Train/test split logic | P1 | Sweep mode | Pending |
 | JSON config output | P1 | Validation | Pending |
 | `scan_stats` recorder | P1 | Stage A | Pending |
-| Reorg detection (SQLite) | P2 | confirmed_orders | Pending |
+| Reorg detection (SQLite) | P2 | confirmed_orders | ✅ Completed |
 
 #### 10. Non-Goals
 
