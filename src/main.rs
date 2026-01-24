@@ -12,15 +12,22 @@ use opinion_hft::data::rest::OpinionClient;
 use opinion_hft::data::websocket::{WebSocketClient, WsEvent};
 use opinion_hft::execution::confirmation::ConfirmationTracker;
 use opinion_hft::execution::gateway::OrderGateway;
+use opinion_hft::execution::priority_queue::{PrioritizedOrder, PriorityQueue};
 use opinion_hft::execution::rate_limiter::RateLimiter;
 use opinion_hft::execution::risk_manager::RiskManager;
-use opinion_hft::strategy::arbitrage::{ArbitrageDetector, OutcomeOrderbook};
+use opinion_hft::strategy::arbitrage::{
+    opportunity_to_order_intents, ArbitrageDetector, OutcomeOrderbook,
+};
+use opinion_hft::strategy::engine::StrategyEngine;
 use opinion_hft::strategy::market_scanner::MarketScanner;
 use opinion_hft::strategy::orderbook_store::LocalOrderbookStore;
 use opinion_hft::telemetry::init_telemetry;
+use opinion_hft::types::{
+    CrossChainSignal, EventEnvelope, MarketTick, OrderUpdate, StrategyCommand,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -35,6 +42,13 @@ fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
@@ -109,6 +123,7 @@ async fn main() -> Result<()> {
     let orderbook_store = LocalOrderbookStore::new();
     let market_pairs: Arc<RwLock<HashMap<i64, MarketTokenPairs>>> =
         Arc::new(RwLock::new(HashMap::new()));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(4096);
 
     ws_client.connect().await?;
     ws_client.subscribe("trade.order.update").await?;
@@ -117,13 +132,31 @@ async fn main() -> Result<()> {
     let mut ws_market_rx = ws_client.subscribe_events();
     let orderbook_store_rx = orderbook_store.clone();
     let market_pairs_rx = market_pairs.clone();
+    let event_tx_ws = event_tx.clone();
     tokio::spawn(async move {
         while let Ok(event) = ws_market_rx.recv().await {
             match event {
                 WsEvent::MarketData { pair, data } => {
+                    let _ = event_tx_ws
+                        .send(EventEnvelope::MarketData(MarketTick {
+                            pair: pair.clone(),
+                            payload: data.clone(),
+                            ts_ms: now_unix_millis(),
+                        }))
+                        .await;
                     if orderbook_store_rx.update_from_ws(&pair, &data).is_none() {
                         tracing::debug!("Ignored market data update for {}", pair);
                     }
+                }
+                WsEvent::OrderUpdate(update) => {
+                    let _ = event_tx_ws
+                        .send(EventEnvelope::OrderUpdate(OrderUpdate {
+                            order_id: update.order_id,
+                            status: update.status,
+                            shares: update.shares,
+                            filled_shares: update.filled_shares,
+                        }))
+                        .await;
                 }
                 WsEvent::MarketDepthDiff {
                     market_id,
@@ -224,7 +257,8 @@ async fn main() -> Result<()> {
     )));
 
     // 6. Initialize Gateway
-    let mut gateway = OrderGateway::new(
+    let execution_config = config.execution.clone();
+    let gateway = Arc::new(OrderGateway::new(
         rest_client.clone(),
         signer,
         rate_limiter.clone(),
@@ -232,17 +266,87 @@ async fn main() -> Result<()> {
         risk_manager.clone(),
         ws_client_for_gateway,
         proxy_address,
-        config.execution,
-    );
+        execution_config.clone(),
+    ));
 
-    // Create channel for strategy -> execution
-    let (strategy_tx, strategy_rx) = tokio::sync::mpsc::channel(100);
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4096);
+
+    tokio::spawn(StrategyEngine::new(event_rx, command_tx).run());
+
+    let order_queue = Arc::new(PriorityQueue::new(execution_config.max_queue_size));
+    let order_queue_enqueue = order_queue.clone();
+    tokio::spawn(async move {
+        while let Some(command) = command_rx.recv().await {
+            match command {
+                StrategyCommand::SubmitOrder(intent) => {
+                    let priority = intent.priority;
+                    let result =
+                        order_queue_enqueue.push(PrioritizedOrder::new(intent, priority, None));
+                    if let Some(dropped) = result.dropped {
+                        let reason = if result.accepted {
+                            "execution queue full; evicted lower priority order"
+                        } else {
+                            "execution queue full; dropped incoming order"
+                        };
+                        warn!(
+                            market_id = %dropped.order.market_id,
+                            priority = ?dropped.priority,
+                            "{reason}"
+                        );
+                    }
+                }
+                StrategyCommand::CancelOrder(order_id) => {
+                    warn!(order_id = %order_id, "cancel order not implemented");
+                }
+            }
+        }
+    });
+
+    let order_queue_execute = order_queue.clone();
+    let gateway_execute = gateway.clone();
+    let rate_limiter_execute = rate_limiter.clone();
+    tokio::spawn(async move {
+        const ORDER_TTL: Duration = Duration::from_millis(50);
+        loop {
+            let Some(order) = order_queue_execute.pop() else {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                continue;
+            };
+
+            if order.enqueue_time.elapsed() > ORDER_TTL {
+                warn!(
+                    market_id = %order.order.market_id,
+                    ttl_ms = ORDER_TTL.as_millis(),
+                    "dropping expired order"
+                );
+                continue;
+            }
+
+            if !rate_limiter_execute.acquire_with_timeout(ORDER_TTL).await {
+                warn!(
+                    market_id = %order.order.market_id,
+                    ttl_ms = ORDER_TTL.as_millis(),
+                    "rate limit backlog too high; dropping order"
+                );
+                continue;
+            }
+
+            let market_id = order.order.market_id.clone();
+            if let Err(e) = gateway_execute
+                .submit_order_unthrottled(order.order, None)
+                .await
+            {
+                error!(market_id = %market_id, error = %e, "order submit failed");
+            }
+        }
+    });
 
     // 7. Spawn Strategy Loop (Arbitrage Scanner)
     let scanner_client = rest_client.clone();
     let scanner_rate_limiter = rate_limiter.clone();
     let orderbook_store_scan = orderbook_store.clone();
     let market_pairs_scan = market_pairs.clone();
+    let event_tx_scanner = event_tx.clone();
 
     let recorder_handle_scanner = recorder_handle.clone();
     #[cfg(feature = "polars")]
@@ -505,8 +609,15 @@ async fn main() -> Result<()> {
                 {
                     neg_risk_found += 1;
                     info!("📊 NEG-RISK FOUND: {}", opp.summary());
-                    if let Err(e) = strategy_tx.send(opp).await {
-                        error!("Failed to send opportunity to gateway: {}", e);
+                    for intent in opportunity_to_order_intents(&opp) {
+                        let signal = CrossChainSignal {
+                            source: "local-scan".to_string(),
+                            intent,
+                            received_at: Instant::now(),
+                        };
+                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
+                            error!("Failed to send signal to strategy engine: {}", e);
+                        }
                     }
                 }
                 #[cfg(feature = "polars")]
@@ -658,8 +769,15 @@ async fn main() -> Result<()> {
                     yesno_found += 1;
                     info!("🚀 ARBITRAGE FOUND: {}", opp.summary());
 
-                    if let Err(e) = strategy_tx.send(opp).await {
-                        error!("Failed to send opportunity to gateway: {}", e);
+                    for intent in opportunity_to_order_intents(&opp) {
+                        let signal = CrossChainSignal {
+                            source: "local-scan".to_string(),
+                            intent,
+                            received_at: Instant::now(),
+                        };
+                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
+                            error!("Failed to send signal to strategy engine: {}", e);
+                        }
                     }
                 }
 
@@ -674,8 +792,15 @@ async fn main() -> Result<()> {
                 ) {
                     mint_sell_found += 1;
                     info!("💰 MINT-SELL FOUND: {}", opp.summary());
-                    if let Err(e) = strategy_tx.send(opp).await {
-                        error!("Failed to send opportunity to gateway: {}", e);
+                    for intent in opportunity_to_order_intents(&opp) {
+                        let signal = CrossChainSignal {
+                            source: "local-scan".to_string(),
+                            intent,
+                            received_at: Instant::now(),
+                        };
+                        if let Err(e) = event_tx_scanner.send(EventEnvelope::Signal(signal)).await {
+                            error!("Failed to send signal to strategy engine: {}", e);
+                        }
                     }
                 }
                 #[cfg(feature = "polars")]
@@ -794,7 +919,7 @@ async fn main() -> Result<()> {
 
     // 9. Run Gateway (with shutdown handling)
     tokio::select! {
-        result = gateway.run(Some(strategy_rx)) => {
+        result = gateway.clone().run(None) => {
             if let Err(e) = result {
                 error!("Gateway fatal error: {}", e);
             }

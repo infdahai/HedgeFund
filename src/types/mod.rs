@@ -1,7 +1,9 @@
+pub mod event;
 pub mod market;
 pub mod order;
 pub mod position;
 
+pub use event::{CrossChainSignal, EventEnvelope, MarketTick, OrderUpdate, StrategyCommand};
 pub use market::Market;
 pub use order::{Order, OrderIntent, OrderSide, SignatureType};
 pub use position::Position;

@@ -490,7 +490,7 @@ impl Default for ExecutionConfig {
         Self {
             rate_limit_tps: DEFAULT_RATE_LIMIT_TPS,
             burst_capacity: 3,
-            max_queue_size: 1000,
+            max_queue_size: 1024,
             order_expiration_buffer: Duration::from_secs(300),
             health_check_interval_local: Duration::from_secs(15),
             health_check_interval_aws: Duration::from_secs(3),
