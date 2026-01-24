@@ -60,9 +60,14 @@ pub struct MicroStrategy {
     pub cooldown_until: HashMap<String, Instant>,
     pub blacklist: HashMap<String, Instant>,
     pub consecutive_losses: HashMap<String, u32>,
-    pub pending_signal: Option<PendingSignal>,
+    pub pending_signals: HashMap<String, PendingSignal>, // Keyed by pair
     pub paper_mode: bool,
     pub token_map: HashMap<String, String>, // pair -> token_id_str
+    // Paper trading metrics
+    pub total_trades: u32,
+    pub winning_trades: u32,
+    pub total_pnl: f64,
+    pub total_notional: f64,
 }
 
 impl MicroStrategy {
@@ -75,14 +80,39 @@ impl MicroStrategy {
             cooldown_until: HashMap::new(),
             blacklist: HashMap::new(),
             consecutive_losses: HashMap::new(),
-            pending_signal: None,
+            pending_signals: HashMap::new(),
             paper_mode,
             token_map: HashMap::new(),
+            total_trades: 0,
+            winning_trades: 0,
+            total_pnl: 0.0,
+            total_notional: 0.0,
         }
     }
 
     pub fn set_token_map(&mut self, map: HashMap<String, String>) {
         self.token_map = map;
+    }
+
+    /// Returns paper trading summary (total_trades, winning_trades, total_pnl, win_rate, return_pct)
+    pub fn paper_summary(&self) -> (u32, u32, f64, f64, f64) {
+        let win_rate = if self.total_trades > 0 {
+            self.winning_trades as f64 / self.total_trades as f64
+        } else {
+            0.0
+        };
+        let return_pct = if self.total_notional > 0.0 {
+            self.total_pnl / self.total_notional
+        } else {
+            0.0
+        };
+        (
+            self.total_trades,
+            self.winning_trades,
+            self.total_pnl,
+            win_rate,
+            return_pct,
+        )
     }
 
     /// Called by ConfirmationTracker when an exit order is confirmed filled.
@@ -153,17 +183,8 @@ impl MicroStrategy {
         }
 
         // 3. State Machine
-        // Note: This logic assumes we process one market/pair at a time in this instance.
-        // If MicroStrategy is global, 'state' needs to be per-pair or we only trade one at a time.
-        // For HFT, usually we track state per instrument.
-        // The architecture implies a single 'state' field in MicroStrategy struct,
-        // which suggests it manages ONE active trade sequence or it needs a map of states.
-        // Architecture doc 14.4.1 defines StrategyState enum but 14.4.2 uses it as `self.state`.
-        // However, `positions` is a HashMap. This implies we can hold multiple positions.
-        // But `pending_signal` is Option<PendingSignal>.
-        // To support multi-market, we should probably have state per pair.
-        // For MVP/Paper Phase 1, let's assume we manage state implicitly via `positions` existence
-        // and `pending_signal`.
+        // Note: This logic processes one market/pair at a time.
+        // State is derived from `positions` and `pending_signals` per pair.
         // If we have a position for this pair -> Holding.
         // If we have a pending signal for this pair -> SignalDetected.
         // Otherwise -> Scanning.
@@ -200,10 +221,8 @@ impl MicroStrategy {
             }
             return StrategyState::Holding;
         }
-        if let Some(signal) = &self.pending_signal {
-            if signal.pair == pair {
-                return StrategyState::SignalDetected;
-            }
+        if self.pending_signals.contains_key(pair) {
+            return StrategyState::SignalDetected;
         }
         StrategyState::Scanning
     }
@@ -217,14 +236,16 @@ impl MicroStrategy {
                 TradeSide::Sell
             };
 
-            self.pending_signal = Some(PendingSignal {
+            let signal = PendingSignal {
                 market_id: feature.market_id.clone(),
                 pair: feature.pair.clone(),
                 side,
                 trigger_time: Instant::now(),
                 trigger_obi: feature.obi_l1,
                 trigger_price: feature.mid_price,
-            });
+            };
+
+            self.pending_signals.insert(feature.pair.clone(), signal);
 
             info!(
                 "Signal detected: {} OBI={:.3} side={:?} price={:.3}",
@@ -239,9 +260,9 @@ impl MicroStrategy {
         feature: &MicrostructureFeature,
         gateway: Option<&OrderGateway>,
     ) -> Result<()> {
-        let signal = match &self.pending_signal {
-            Some(s) if s.pair == feature.pair => s.clone(),
-            _ => return Ok(()), // Not relevant for this pair
+        let signal = match self.pending_signals.get(&feature.pair) {
+            Some(s) => s.clone(),
+            None => return Ok(()), // No pending signal for this pair
         };
 
         // Confirmation delay
@@ -260,7 +281,7 @@ impl MicroStrategy {
                 "Signal invalidated: {} OBI dropped to {:.3}",
                 feature.pair, feature.obi_l1
             );
-            self.pending_signal = None;
+            self.pending_signals.remove(&feature.pair);
             return Ok(());
         }
 
@@ -269,7 +290,7 @@ impl MicroStrategy {
                 "Signal rejected: spread too wide {:.1} bps",
                 feature.spread_bps
             );
-            self.pending_signal = None;
+            self.pending_signals.remove(&feature.pair);
             return Ok(());
         }
 
@@ -277,7 +298,7 @@ impl MicroStrategy {
         let order_size = self.calculate_order_size(feature);
         if order_size < self.config.min_order_notional {
             debug!("Signal rejected: size {:.2} < min", order_size);
-            self.pending_signal = None;
+            self.pending_signals.remove(&feature.pair);
             return Ok(());
         }
 
@@ -307,7 +328,7 @@ impl MicroStrategy {
                 order_id,
             );
             self.positions.insert(feature.pair.clone(), pos);
-            self.pending_signal = None;
+            self.pending_signals.remove(&feature.pair);
         } else if let Some(gw) = gateway {
             if let Some(token_id_str) = self.token_map.get(&feature.pair) {
                 use std::str::FromStr;
@@ -322,7 +343,7 @@ impl MicroStrategy {
                     Some(wei) => wei,
                     None => {
                         warn!("Invalid quantity for entry: {}", quantity);
-                        self.pending_signal = None;
+                        self.pending_signals.remove(&feature.pair);
                         return Ok(());
                     }
                 };
@@ -355,7 +376,7 @@ impl MicroStrategy {
             } else {
                 warn!("Token ID not found for pair {}", feature.pair);
             }
-            self.pending_signal = None;
+            self.pending_signals.remove(&feature.pair);
         }
 
         Ok(())
@@ -377,6 +398,14 @@ impl MicroStrategy {
 
         if let Some(reason) = exit_reason {
             if self.paper_mode {
+                // Track metrics before removing position
+                self.total_trades += 1;
+                self.total_pnl += position.current_pnl;
+                self.total_notional += position.notional;
+                if position.current_pnl > 0.0 {
+                    self.winning_trades += 1;
+                }
+
                 info!(
                     "[PAPER] Exit: {} reason={:?} pnl={:.4} return={:.2}% holding={:.1}s",
                     feature.pair,
@@ -511,8 +540,16 @@ impl MicroStrategy {
         let spread_ok = feature.spread_bps < self.config.max_spread_bps;
         let liquidity_ok = feature.total_liquidity > self.config.min_liquidity;
 
-        // Initial simplified check without complex OFI history
-        let ofi_ok = true;
+        // OFI confirmation: OFI EMA should align with OBI direction
+        // If OBI is positive (buy pressure), OFI should also be positive
+        // If OBI is negative (sell pressure), OFI should also be negative
+        let ofi_ok = if self.config.enter_ofi_threshold > 0.0 {
+            (feature.obi_l1 > 0.0 && feature.ofi_ema > self.config.enter_ofi_threshold)
+                || (feature.obi_l1 < 0.0 && feature.ofi_ema < -self.config.enter_ofi_threshold)
+        } else {
+            // If threshold is 0, skip OFI check
+            true
+        };
 
         obi_strong && spread_ok && liquidity_ok && ofi_ok
     }

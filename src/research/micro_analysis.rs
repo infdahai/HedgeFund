@@ -10,7 +10,7 @@ use crate::strategy::core::{MarketOrderbook, OrderbookSide};
 
 pub fn analyze_market_microstructure(
     markets: &HashMap<String, Vec<MarketTick>>,
-    _config: &CliConfig,
+    config: &CliConfig,
 ) -> Result<()> {
     let mut all_features = Vec::new();
 
@@ -31,12 +31,11 @@ pub fn analyze_market_microstructure(
     // Convert to DataFrame and write to Parquet
     let mut df = features_to_dataframe(&all_features)?;
 
-    // Determine output path: use --output or default to "features.parquet"
-    // Since config.output is usually for CSV reports, we might want a specific flag or just hardcode for now
-    // logic in research.rs usually handles output paths.
-    // If we are in 'microstructure' mode, research.rs might pass specific config.
-    // For now let's use a fixed name in the current directory or derived from config.
-    let output_path = "features.parquet";
+    // Use --output-microstructure if set, otherwise default to "features.parquet"
+    let output_path = config
+        .output_microstructure
+        .as_deref()
+        .unwrap_or("features.parquet");
 
     let file = File::create(output_path)?;
     ParquetWriter::new(file).finish(&mut df)?;

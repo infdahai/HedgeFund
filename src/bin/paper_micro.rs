@@ -156,10 +156,22 @@ async fn main() -> anyhow::Result<()> {
 
     // Print final stats
     let strat = strategy.read().await;
-    info!("=== Paper Trading Session Ended ===");
-    info!("Active Positions: {}", strat.positions.len());
-    // We could calculate total PnL here if we tracked it in strategy struct
-    // Current strategy struct tracks positions and logic, maybe add a total_pnl field later.
+    let (total_trades, winning_trades, total_pnl, win_rate, return_pct) = strat.paper_summary();
+
+    info!("=== Paper Trading Session Summary ===");
+    info!("Total Trades: {}", total_trades);
+    info!("Winning Trades: {}", winning_trades);
+    info!("Win Rate: {:.1}%", win_rate * 100.0);
+    info!("Total PnL: ${:.2}", total_pnl);
+    info!("Return: {:.2}%", return_pct * 100.0);
+    info!("Open Positions: {}", strat.positions.len());
+
+    // Calculate open position PnL
+    let open_pnl: f64 = strat.positions.values().map(|p| p.current_pnl).sum();
+    if !strat.positions.is_empty() {
+        info!("Open Position PnL: ${:.2}", open_pnl);
+    }
+    info!("=====================================");
 
     Ok(())
 }

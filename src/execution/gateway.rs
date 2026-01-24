@@ -285,6 +285,8 @@ impl OrderGateway {
             position_before,
             submitted_at: std::time::Instant::now(),
             hedge_intent: hedge_intent.map(Box::new).map(|b| *b),
+            is_micro_exit: false,
+            micro_pair: None,
         });
 
         let price_str = format!("{:.1}", intent.price);

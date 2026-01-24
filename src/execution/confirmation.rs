@@ -20,6 +20,10 @@ pub struct PendingOrder {
     pub position_before: U256,
     pub submitted_at: Instant,
     pub hedge_intent: Option<OrderIntent>,
+    /// For microstructure strategy: tracks if this is an exit order
+    pub is_micro_exit: bool,
+    /// For microstructure strategy: the pair (e.g., "123-YES") for exit confirmation
+    pub micro_pair: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +39,10 @@ pub struct ConfirmedOrder {
     pub confirmation_time: Duration,
     pub hedge_intent: Option<OrderIntent>,
     pub block_number: Option<u64>,
+    /// For microstructure strategy: tracks if this is an exit order
+    pub is_micro_exit: bool,
+    /// For microstructure strategy: the pair (e.g., "123-YES") for exit confirmation
+    pub micro_pair: Option<String>,
 }
 
 pub struct ConfirmationTracker {
@@ -150,6 +158,8 @@ impl ConfirmationTracker {
             confirmation_time: pending.submitted_at.elapsed(),
             hedge_intent: pending.hedge_intent,
             block_number,
+            is_micro_exit: pending.is_micro_exit,
+            micro_pair: pending.micro_pair,
         };
 
         self.confirmation_tx
@@ -283,6 +293,8 @@ impl ConfirmationTracker {
                             confirmation_time: pending.submitted_at.elapsed(),
                             hedge_intent: pending.hedge_intent,
                             block_number,
+                            is_micro_exit: pending.is_micro_exit,
+                            micro_pair: pending.micro_pair,
                         };
 
                         let _ = self.confirmation_tx.send(confirmed.clone()).await;
@@ -363,6 +375,8 @@ mod tests {
             position_before: U256::from(100),
             submitted_at: Instant::now(),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         tracker.register_order(pending);
@@ -385,6 +399,8 @@ mod tests {
             position_before: U256::from(100),
             submitted_at: Instant::now(),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         tracker.register_order(pending);
@@ -410,6 +426,8 @@ mod tests {
             position_before: U256::from(100),
             submitted_at: Instant::now() - Duration::from_secs(60),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         let new_pending = PendingOrder {
@@ -421,6 +439,8 @@ mod tests {
             position_before: U256::from(200),
             submitted_at: Instant::now(),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         tracker.register_order(old_pending);
@@ -449,6 +469,8 @@ mod tests {
             position_before: U256::from(100),
             submitted_at: Instant::now(),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         tracker.register_order(pending);
@@ -479,6 +501,8 @@ mod tests {
             position_before: U256::from(100),
             submitted_at: Instant::now(),
             hedge_intent: None,
+            is_micro_exit: false,
+            micro_pair: None,
         };
 
         tracker1.register_order(pending);
