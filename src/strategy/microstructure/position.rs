@@ -17,6 +17,11 @@ pub struct MicroPosition {
     pub peak_price: f64,   // Highest price seen (for trailing logic if needed)
     pub trough_price: f64, // Lowest price seen
     pub current_pnl: f64,  // Unrealized P&L
+
+    /// True if an exit order has been submitted but not yet confirmed
+    pub exit_pending: bool,
+    /// Order ID of the exit order (if submitted)
+    pub exit_order_id: Option<String>,
 }
 
 impl MicroPosition {
@@ -42,6 +47,8 @@ impl MicroPosition {
             quantity,
             entry_time: Instant::now(),
             order_id,
+            exit_pending: false,
+            exit_order_id: None,
         }
     }
 

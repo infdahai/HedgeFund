@@ -318,6 +318,9 @@ impl RiskManager {
     }
 
     /// Validate microstructure directional trade
+    ///
+    /// Unlike arbitrage trades, directional trades don't have a known expected_profit.
+    /// We skip the min-profit check and rely on OBI/spread thresholds instead.
     pub fn validate_micro_trade(
         &self,
         market_id: &str,
@@ -326,8 +329,50 @@ impl RiskManager {
         current_obi: f64,
         current_spread_bps: f64,
     ) -> Result<()> {
-        // Base checks
-        self.validate_pre_trade(market_id, 0.0, order_size)?;
+        // Check if system is halted
+        if self.is_halted {
+            return Err(Error::SystemHalted("Trading halted by risk manager".into()));
+        }
+
+        // Check daily loss limit
+        if self.daily_pnl <= -self.config.max_daily_loss {
+            return Err(Error::RiskLimitExceeded(format!(
+                "Daily loss limit reached: {:.2} <= -{:.2}",
+                self.daily_pnl, self.config.max_daily_loss
+            )));
+        }
+
+        // Check drawdown
+        if self.peak_equity > 0.0 {
+            let drawdown = (self.peak_equity - self.current_equity) / self.peak_equity;
+            if drawdown > self.config.max_drawdown_pct {
+                return Err(Error::RiskLimitExceeded(format!(
+                    "Drawdown limit exceeded: {:.2}% > {:.2}%",
+                    drawdown * 100.0,
+                    self.config.max_drawdown_pct * 100.0
+                )));
+            }
+        }
+
+        // Check position limit
+        let current_position = self.positions.get(market_id).copied().unwrap_or(0.0);
+        if current_position + order_size > self.config.max_position_per_market {
+            return Err(Error::RiskLimitExceeded(format!(
+                "Position limit exceeded for {}: {:.2} + {:.2} > {:.2}",
+                market_id, current_position, order_size, self.config.max_position_per_market
+            )));
+        }
+
+        // Check total exposure
+        let total_exposure: f64 = self.positions.values().sum();
+        if total_exposure + order_size > self.config.max_total_exposure {
+            return Err(Error::RiskLimitExceeded(format!(
+                "Total exposure limit exceeded: {:.2} + {:.2} > {:.2}",
+                total_exposure, order_size, self.config.max_total_exposure
+            )));
+        }
+
+        // NOTE: Skip min-profit check for directional trades (no known expected_profit)
 
         // 1. OBI must be extreme enough (redundant with strategy but good safety net)
         if current_obi.abs() < 0.5 {

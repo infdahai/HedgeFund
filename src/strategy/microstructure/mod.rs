@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -18,6 +19,9 @@ pub use position::MicroPosition;
 // Since this is inside `impl`, it is fine.
 // But we need to import the type.
 use crate::execution::gateway::OrderGateway;
+
+/// Monotonic counter for generating unique paper order IDs
+static PAPER_ORDER_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrategyState {
@@ -79,6 +83,45 @@ impl MicroStrategy {
 
     pub fn set_token_map(&mut self, map: HashMap<String, String>) {
         self.token_map = map;
+    }
+
+    /// Called by ConfirmationTracker when an exit order is confirmed filled.
+    /// Removes the position and updates loss tracking.
+    pub fn confirm_exit(&mut self, pair: &str, actual_pnl: f64) {
+        if let Some(position) = self.positions.remove(pair) {
+            info!(
+                "Exit confirmed: {} pnl={:.4} return={:.2}%",
+                pair,
+                actual_pnl,
+                position.return_pct() * 100.0
+            );
+
+            if actual_pnl < 0.0 {
+                let count = self
+                    .consecutive_losses
+                    .entry(position.market_id.clone())
+                    .or_insert(0);
+                *count += 1;
+
+                self.cooldown_until.insert(
+                    position.market_id.clone(),
+                    Instant::now() + self.config.cooldown_after_loss,
+                );
+
+                if *count >= self.config.max_consecutive_losses {
+                    self.blacklist.insert(
+                        position.market_id.clone(),
+                        Instant::now() + self.config.blacklist_duration,
+                    );
+                    warn!(
+                        "Market {} blacklisted after confirmed loss",
+                        position.market_id
+                    );
+                }
+            } else {
+                self.consecutive_losses.remove(&position.market_id);
+            }
+        }
     }
 
     pub async fn on_orderbook_update(
@@ -151,7 +194,10 @@ impl MicroStrategy {
     }
 
     fn get_state(&self, pair: &str) -> StrategyState {
-        if self.positions.contains_key(pair) {
+        if let Some(pos) = self.positions.get(pair) {
+            if pos.exit_pending {
+                return StrategyState::ExitPending;
+            }
             return StrategyState::Holding;
         }
         if let Some(signal) = &self.pending_signal {
@@ -243,6 +289,10 @@ impl MicroStrategy {
         let quantity = order_size / entry_price;
 
         if self.paper_mode {
+            let order_id = format!(
+                "paper-{}",
+                PAPER_ORDER_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
             info!(
                 "[PAPER] Entry: {} {:?} qty={:.2} price={:.3} notional={:.2}",
                 feature.pair, signal.side, quantity, entry_price, order_size
@@ -254,7 +304,7 @@ impl MicroStrategy {
                 entry_price,
                 signal.trigger_obi,
                 quantity,
-                format!("paper-{}", Instant::now().elapsed().as_nanos()),
+                order_id,
             );
             self.positions.insert(feature.pair.clone(), pos);
             self.pending_signal = None;
@@ -268,12 +318,21 @@ impl MicroStrategy {
                     TradeSide::Sell => OrderSide::Sell,
                 };
 
+                let quantity_wei = match Self::quantity_to_wei(quantity) {
+                    Some(wei) => wei,
+                    None => {
+                        warn!("Invalid quantity for entry: {}", quantity);
+                        self.pending_signal = None;
+                        return Ok(());
+                    }
+                };
+
                 let intent = OrderIntent::new(
                     feature.market_id.clone(),
                     token_id,
                     order_side,
                     entry_price,
-                    alloy_primitives::U256::from((quantity * 1e18) as u128),
+                    quantity_wei,
                 )
                 .with_priority(OrderPriority::High);
 
@@ -352,7 +411,13 @@ impl MicroStrategy {
 
                 self.positions.remove(&feature.pair);
             } else {
-                // Submit exit order
+                // Submit exit order (live mode)
+                // Skip if already exit pending
+                if position.exit_pending {
+                    debug!("Exit already pending for {}", feature.pair);
+                    return Ok(());
+                }
+
                 if let Some(gw) = gateway {
                     if let Some(token_id_str) = self.token_map.get(&feature.pair) {
                         use std::str::FromStr;
@@ -377,24 +442,30 @@ impl MicroStrategy {
                             return Ok(());
                         }
 
+                        let quantity_wei = match Self::quantity_to_wei(position.quantity) {
+                            Some(wei) => wei,
+                            None => {
+                                warn!("Invalid quantity for exit: {}", position.quantity);
+                                return Ok(());
+                            }
+                        };
+
                         let intent = OrderIntent::new(
                             feature.market_id.clone(),
                             token_id,
                             exit_side,
                             exit_price,
-                            alloy_primitives::U256::from((position.quantity * 1e18) as u128),
+                            quantity_wei,
                         )
                         .with_priority(OrderPriority::Critical); // Exits are critical
 
                         match gw.submit_order(intent, None).await {
                             Ok(id) => {
                                 info!("Submitted exit order: {} reason={:?}", id, reason);
-                                // Mark as exit pending or remove?
-                                // For simplicity, remove position now, assuming fill.
-                                // In real HFT, we wait for fill.
-                                // But here we just assume submission means we are 'exiting'.
-                                // Or we should transition state.
-                                self.positions.remove(&feature.pair);
+                                // Mark as exit pending - DO NOT remove position yet
+                                // Wait for ConfirmationTracker to confirm fill
+                                position.exit_pending = true;
+                                position.exit_order_id = Some(id);
                             }
                             Err(e) => warn!("Exit order failed: {}", e),
                         }
@@ -460,5 +531,267 @@ impl MicroStrategy {
 
     fn is_cooling_down(&self, market_id: &str, now: Instant) -> bool {
         self.cooldown_until.get(market_id).is_some_and(|t| now < *t)
+    }
+
+    /// Convert quantity to wei (18 decimals) as U256 with safety checks
+    fn quantity_to_wei(quantity: f64) -> Option<alloy_primitives::U256> {
+        if !quantity.is_finite() || quantity <= 0.0 {
+            return None;
+        }
+        // Scale to 18 decimals
+        let wei_f64 = quantity * 1e18;
+        if !wei_f64.is_finite() || wei_f64 > u128::MAX as f64 {
+            return None;
+        }
+        // Round to nearest integer
+        let wei_rounded = wei_f64.round();
+        if wei_rounded <= 0.0 {
+            return None;
+        }
+        Some(alloy_primitives::U256::from(wei_rounded as u128))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_feature(obi_l1: f64, spread_bps: f64, total_liquidity: f64) -> MicrostructureFeature {
+        MicrostructureFeature {
+            market_id: "test".to_string(),
+            pair: "test-YES".to_string(),
+            timestamp_ms: 0,
+            mid_price: 0.50,
+            best_bid: 0.49,
+            best_ask: 0.51,
+            spread_abs: 0.02,
+            spread_bps,
+            bid_depth_l1: 100.0,
+            ask_depth_l1: 100.0,
+            obi_l1,
+            bid_depth_l5: 500.0,
+            ask_depth_l5: 500.0,
+            obi_l5: obi_l1,
+            ofi: 0.0,
+            ofi_ema: 0.0,
+            depth_ratio: 1.0,
+            total_liquidity,
+            next_price_10s: None,
+            next_price_30s: None,
+            price_change_10s: None,
+        }
+    }
+
+    #[test]
+    fn test_state_scanning_default() {
+        let config = MicroConfig::default();
+        let strategy = MicroStrategy::new(config, true);
+        assert_eq!(strategy.get_state("any-pair"), StrategyState::Scanning);
+    }
+
+    #[test]
+    fn test_state_holding_with_position() {
+        let config = MicroConfig::default();
+        let mut strategy = MicroStrategy::new(config, true);
+
+        let pos = MicroPosition::new(
+            "market1".to_string(),
+            "market1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "order-1".to_string(),
+        );
+        strategy.positions.insert("market1-YES".to_string(), pos);
+
+        assert_eq!(strategy.get_state("market1-YES"), StrategyState::Holding);
+    }
+
+    #[test]
+    fn test_state_exit_pending() {
+        let config = MicroConfig::default();
+        let mut strategy = MicroStrategy::new(config, true);
+
+        let mut pos = MicroPosition::new(
+            "market1".to_string(),
+            "market1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "order-1".to_string(),
+        );
+        pos.exit_pending = true;
+        pos.exit_order_id = Some("exit-1".to_string());
+        strategy.positions.insert("market1-YES".to_string(), pos);
+
+        assert_eq!(
+            strategy.get_state("market1-YES"),
+            StrategyState::ExitPending
+        );
+    }
+
+    #[test]
+    fn test_is_entry_signal_strong_obi() {
+        let config = MicroConfig {
+            enter_obi_threshold: 0.7,
+            max_spread_bps: 50.0,
+            min_liquidity: 10.0,
+            ..Default::default()
+        };
+
+        let strategy = MicroStrategy::new(config, true);
+
+        // Strong OBI, good spread, good liquidity
+        let feature = make_feature(0.8, 20.0, 200.0);
+        assert!(strategy.is_entry_signal(&feature));
+
+        // Weak OBI
+        let feature = make_feature(0.5, 20.0, 200.0);
+        assert!(!strategy.is_entry_signal(&feature));
+
+        // Spread too wide
+        let feature = make_feature(0.8, 100.0, 200.0);
+        assert!(!strategy.is_entry_signal(&feature));
+
+        // Low liquidity
+        let feature = make_feature(0.8, 20.0, 5.0);
+        assert!(!strategy.is_entry_signal(&feature));
+    }
+
+    #[test]
+    fn test_exit_stop_loss() {
+        let config = MicroConfig::default();
+        let mut pos = MicroPosition::new(
+            "m1".to_string(),
+            "m1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "o1".to_string(),
+        );
+        // Price dropped below stop loss
+        pos.update_price(0.49); // -2% from 0.50
+        pos.current_pnl = -2.0; // Loss
+
+        let feature = make_feature(0.5, 20.0, 200.0);
+
+        let exit = MicroStrategy::check_exit_conditions(&config, &pos, &feature);
+        assert_eq!(exit, Some(ExitReason::StopLoss));
+    }
+
+    #[test]
+    fn test_exit_take_profit() {
+        let config = MicroConfig::default();
+        let mut pos = MicroPosition::new(
+            "m1".to_string(),
+            "m1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "o1".to_string(),
+        );
+        // Price increased above take profit
+        pos.update_price(0.52); // +4% from 0.50
+        pos.current_pnl = 2.0; // Profit
+                               // notional = 50, pnl = 2, return = 4%
+
+        let feature = make_feature(0.8, 20.0, 200.0);
+
+        let exit = MicroStrategy::check_exit_conditions(&config, &pos, &feature);
+        assert_eq!(exit, Some(ExitReason::TakeProfit));
+    }
+
+    #[test]
+    fn test_exit_obi_reversal() {
+        let config = MicroConfig::default();
+        let pos = MicroPosition::new(
+            "m1".to_string(),
+            "m1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "o1".to_string(),
+        );
+
+        // OBI reversed to negative (below -0.3 threshold)
+        let feature = make_feature(-0.5, 20.0, 200.0);
+
+        let exit = MicroStrategy::check_exit_conditions(&config, &pos, &feature);
+        assert_eq!(exit, Some(ExitReason::ObiReversal));
+    }
+
+    #[test]
+    fn test_quantity_to_wei_valid() {
+        let wei = MicroStrategy::quantity_to_wei(1.0).unwrap();
+        assert_eq!(wei.to_string(), "1000000000000000000"); // 1e18
+    }
+
+    #[test]
+    fn test_quantity_to_wei_small() {
+        let wei = MicroStrategy::quantity_to_wei(0.001).unwrap();
+        assert_eq!(wei.to_string(), "1000000000000000"); // 1e15
+    }
+
+    #[test]
+    fn test_quantity_to_wei_invalid() {
+        assert!(MicroStrategy::quantity_to_wei(0.0).is_none());
+        assert!(MicroStrategy::quantity_to_wei(-1.0).is_none());
+        assert!(MicroStrategy::quantity_to_wei(f64::NAN).is_none());
+        assert!(MicroStrategy::quantity_to_wei(f64::INFINITY).is_none());
+    }
+
+    #[test]
+    fn test_confirm_exit_removes_position() {
+        let config = MicroConfig::default();
+        let mut strategy = MicroStrategy::new(config, true);
+
+        let pos = MicroPosition::new(
+            "m1".to_string(),
+            "m1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "o1".to_string(),
+        );
+        strategy.positions.insert("m1-YES".to_string(), pos);
+
+        assert!(strategy.positions.contains_key("m1-YES"));
+        strategy.confirm_exit("m1-YES", 1.0); // Profitable exit
+        assert!(!strategy.positions.contains_key("m1-YES"));
+    }
+
+    #[test]
+    fn test_confirm_exit_loss_triggers_cooldown() {
+        let config = MicroConfig::default();
+        let mut strategy = MicroStrategy::new(config, true);
+
+        let pos = MicroPosition::new(
+            "m1".to_string(),
+            "m1-YES".to_string(),
+            TradeSide::Buy,
+            0.50,
+            0.75,
+            100.0,
+            "o1".to_string(),
+        );
+        strategy.positions.insert("m1-YES".to_string(), pos);
+
+        strategy.confirm_exit("m1-YES", -1.0); // Loss
+
+        assert!(strategy.cooldown_until.contains_key("m1"));
+        assert_eq!(strategy.consecutive_losses.get("m1"), Some(&1));
+    }
+
+    #[test]
+    fn test_paper_order_id_uniqueness() {
+        let id1 = PAPER_ORDER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let id2 = PAPER_ORDER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(id1, id2);
     }
 }

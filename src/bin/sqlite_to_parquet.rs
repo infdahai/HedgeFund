@@ -91,7 +91,8 @@ fn parse_args() -> anyhow::Result<(PathBuf, PathBuf)> {
 
     use anyhow::{anyhow, Context};
 
-    let mut input_dir = PathBuf::from("/Users/disaster/workspace/code/test/backtest_data");
+    // Default to relative paths that work across machines
+    let mut input_dir = PathBuf::from("data");
     let mut output_dir = PathBuf::from("data/parquet");
 
     let mut args = env::args().skip(1);
@@ -107,7 +108,7 @@ fn parse_args() -> anyhow::Result<(PathBuf, PathBuf)> {
             }
             "--help" => {
                 println!(
-                    "sqlite_to_parquet --input-dir <dir> --output-dir <dir>\n\nDefaults:\n  --input-dir /Users/disaster/workspace/code/test/backtest_data\n  --output-dir data/parquet"
+                    "sqlite_to_parquet --input-dir <dir> --output-dir <dir>\n\nDefaults:\n  --input-dir data\n  --output-dir data/parquet"
                 );
                 std::process::exit(0);
             }
@@ -132,7 +133,7 @@ fn load_sqlite(
     let mut stmt = conn.prepare(
         "SELECT snapshot_id, side, price, size, level FROM orderbook_levels ORDER BY snapshot_id, level",
     )?;
-    let rows = stmt.query_map([], |row| parse_level_row(row))?;
+    let rows = stmt.query_map([], parse_level_row)?;
     for row in rows {
         let (snapshot_id, side, level) = row?;
         let entry = levels_map.entry(snapshot_id).or_default();

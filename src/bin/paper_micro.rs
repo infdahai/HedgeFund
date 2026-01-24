@@ -104,22 +104,27 @@ async fn main() -> anyhow::Result<()> {
                         side,
                         price,
                         size,
-                        outcome: Some(outcome_str),
+                        outcome,
+                        outcome_side,
                         ..
                     } => {
-                        // Determine pair name: "{market_id}-{outcome}"
-                        // outcome is Option<String> in WsEvent based on my memory of codebase or recent read?
-                        // Let's check WsEvent definition in next step if this fails to compile.
-                        // Based on `orderbook_store.rs`, it takes `pair`.
-                        // The scanner creates pairs like "123-YES".
-                        // WsEvent definition in `src/data/websocket/client.rs` (read in explore phase)
-                        // MarketDepthDiff { market_id, outcome, outcome_side, side, price, size }
+                        // Determine outcome string from either `outcome` or `outcome_side`
+                        // outcome is Option<String> like "YES" or "NO"
+                        // outcome_side is Option<i64> where 0 = YES, 1 = NO
+                        let outcome_str = match (outcome, outcome_side) {
+                            (Some(s), _) => s,
+                            (None, Some(0)) => "YES".to_string(),
+                            (None, Some(1)) => "NO".to_string(),
+                            _ => {
+                                // Neither outcome nor outcome_side available, skip
+                                continue;
+                            }
+                        };
 
                         let pair = format!("{}-{}", market_id, outcome_str);
 
                         // Update local orderbook
-                        // Using side string from event? "bids" or "asks"
-                        // LocalOrderbookStore::apply_depth_diff takes `side` as &str
+                        // Using side string from event: "bids" or "asks"
                         if orderbook_store.apply_depth_diff(&pair, &side, price, size) {
                             // If update applied, run strategy
                             if let Some(ob) = orderbook_store.get(&pair) {
@@ -136,10 +141,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     WsEvent::Disconnected { reason } => {
                         warn!("WebSocket disconnected: {}", reason);
-                        // Reconnection logic is handled by client internal loop usually?
-                        // Or we might need to resubscribe.
-                        // Assuming client handles reconnect, but subscriptions might be lost if not persistent.
-                        // For MVP paper trading, we just log.
+                        // Reconnection logic is handled by client internal loop usually
                     }
                     _ => {} // Ignore other events
                 }

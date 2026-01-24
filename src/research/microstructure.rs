@@ -255,7 +255,7 @@ fn maker_fill_rate(yes_bid: f64, yes_ask: f64, no_bid: f64, no_ask: f64) -> f64 
     (1.0 - avg_margin * 10.0).clamp(0.0, 1.0)
 }
 
-fn percentile(values: &mut Vec<f64>, quantile: f64) -> f64 {
+fn percentile(values: &mut [f64], quantile: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }

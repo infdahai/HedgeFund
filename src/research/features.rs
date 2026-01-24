@@ -244,9 +244,7 @@ fn imbalance(bid: f64, ask: f64) -> f64 {
 }
 
 fn option_f64(value: Option<f64>) -> String {
-    value
-        .map(|v| format!("{v:.6}"))
-        .unwrap_or_else(|| "".to_string())
+    value.map(|v| format!("{v:.6}")).unwrap_or_default()
 }
 
 fn derive_outcome(pair: &str) -> String {

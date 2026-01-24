@@ -38,6 +38,7 @@ pub(crate) struct TradeRecord {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ConfirmedOrderRecord {
     pub(crate) market_id: String,
     pub(crate) side: String,
