@@ -1,6 +1,7 @@
 pub mod arbitrage;
 pub mod backtest;
 pub mod core;
+pub mod engine;
 pub mod market_scanner;
 pub mod orderbook_store;
 pub mod rotator;

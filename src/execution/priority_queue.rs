@@ -5,6 +5,11 @@ use std::time::Instant;
 
 use crate::types::{OrderIntent, OrderPriority};
 
+pub struct PushResult {
+    pub accepted: bool,
+    pub dropped: Option<PrioritizedOrder>,
+}
+
 pub struct PrioritizedOrder {
     pub order: OrderIntent,
     pub priority: OrderPriority,
@@ -67,19 +72,40 @@ impl PriorityQueue {
         }
     }
 
-    pub fn push(&self, mut order: PrioritizedOrder) -> bool {
+    pub fn push(&self, mut order: PrioritizedOrder) -> PushResult {
         let mut heap = self.heap.lock().unwrap();
-
-        if heap.len() >= self.max_size {
-            return false;
-        }
 
         let mut seq = self.sequence_counter.lock().unwrap();
         order.sequence = *seq;
         *seq += 1;
 
-        heap.push(order);
-        true
+        if heap.len() < self.max_size {
+            heap.push(order);
+            return PushResult {
+                accepted: true,
+                dropped: None,
+            };
+        }
+
+        let new_sequence = order.sequence;
+        let mut items: Vec<PrioritizedOrder> = heap.drain().collect();
+        items.push(order);
+        let drop_index = items
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| compare_for_drop(left, right))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let dropped = items.swap_remove(drop_index);
+
+        for item in items {
+            heap.push(item);
+        }
+
+        PushResult {
+            accepted: dropped.sequence != new_sequence,
+            dropped: Some(dropped),
+        }
     }
 
     pub fn pop(&self) -> Option<PrioritizedOrder> {
@@ -114,7 +140,14 @@ impl PriorityQueue {
 
 impl Default for PriorityQueue {
     fn default() -> Self {
-        Self::new(1000)
+        Self::new(1024)
+    }
+}
+
+fn compare_for_drop(left: &PrioritizedOrder, right: &PrioritizedOrder) -> Ordering {
+    match (left.priority as u8).cmp(&(right.priority as u8)) {
+        Ordering::Equal => left.sequence.cmp(&right.sequence),
+        ordering => ordering,
     }
 }
 
@@ -139,22 +172,22 @@ mod tests {
     fn test_priority_ordering() {
         let queue = PriorityQueue::new(100);
 
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("low"),
             OrderPriority::Low,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("high"),
             OrderPriority::High,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("critical"),
             OrderPriority::Critical,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("medium"),
             OrderPriority::Medium,
             None,
@@ -170,17 +203,17 @@ mod tests {
     fn test_fifo_within_same_priority() {
         let queue = PriorityQueue::new(100);
 
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("first"),
             OrderPriority::Medium,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("second"),
             OrderPriority::Medium,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("third"),
             OrderPriority::Medium,
             None,
@@ -196,12 +229,12 @@ mod tests {
         let queue = PriorityQueue::new(100);
 
         let past = Instant::now() - Duration::from_secs(1);
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("expired"),
             OrderPriority::High,
             Some(past),
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("valid"),
             OrderPriority::Low,
             None,
@@ -215,21 +248,24 @@ mod tests {
     fn test_max_size_enforcement() {
         let queue = PriorityQueue::new(2);
 
-        assert!(queue.push(PrioritizedOrder::new(
+        let first = queue.push(PrioritizedOrder::new(
             make_order("1"),
             OrderPriority::Low,
-            None
-        )));
-        assert!(queue.push(PrioritizedOrder::new(
+            None,
+        ));
+        assert!(first.accepted);
+        let second = queue.push(PrioritizedOrder::new(
             make_order("2"),
             OrderPriority::Low,
-            None
-        )));
-        assert!(!queue.push(PrioritizedOrder::new(
+            None,
+        ));
+        assert!(second.accepted);
+        let third = queue.push(PrioritizedOrder::new(
             make_order("3"),
             OrderPriority::Low,
-            None
-        )));
+            None,
+        ));
+        assert!(third.dropped.is_some());
 
         assert_eq!(queue.len(), 2);
     }
@@ -244,12 +280,12 @@ mod tests {
     #[test]
     fn test_clear() {
         let queue = PriorityQueue::new(100);
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("1"),
             OrderPriority::Low,
             None,
         ));
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("2"),
             OrderPriority::Low,
             None,
@@ -265,14 +301,14 @@ mod tests {
 
         assert!(queue.peek_priority().is_none());
 
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("low"),
             OrderPriority::Low,
             None,
         ));
         assert_eq!(queue.peek_priority(), Some(OrderPriority::Low));
 
-        queue.push(PrioritizedOrder::new(
+        let _ = queue.push(PrioritizedOrder::new(
             make_order("high"),
             OrderPriority::High,
             None,

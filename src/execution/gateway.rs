@@ -108,7 +108,7 @@ impl OrderGateway {
     }
 
     pub async fn run(
-        &mut self,
+        self: Arc<Self>,
         mut opportunity_rx: Option<
             tokio::sync::mpsc::Receiver<crate::strategy::arbitrage::ArbitrageOpportunity>,
         >,
@@ -214,24 +214,6 @@ impl OrderGateway {
         Ok(())
     }
 
-    async fn acquire_with_ttl(&self, intent: &OrderIntent) -> Result<()> {
-        let ttl = match intent.priority {
-            crate::types::OrderPriority::Critical => std::time::Duration::from_millis(50),
-            crate::types::OrderPriority::High => std::time::Duration::from_millis(100),
-            crate::types::OrderPriority::Medium => std::time::Duration::from_millis(150),
-            crate::types::OrderPriority::Low => std::time::Duration::from_millis(250),
-        };
-
-        let acquired = self.rate_limiter.acquire_with_timeout(ttl).await;
-        if !acquired {
-            return Err(Error::RateLimitExceeded {
-                retry_after_ms: ttl.as_millis() as u64,
-            });
-        }
-
-        Ok(())
-    }
-
     pub async fn submit_order(
         &self,
         intent: OrderIntent,
@@ -243,32 +225,34 @@ impl OrderGateway {
             ));
         }
 
-        // 1. Pre-trade Risk Check
-        // Calculate estimated order size in USDT
+        self.rate_limiter.acquire().await;
+
+        self.submit_order_unthrottled(intent, hedge_intent).await
+    }
+
+    pub async fn submit_order_unthrottled(
+        &self,
+        intent: OrderIntent,
+        hedge_intent: Option<OrderIntent>,
+    ) -> Result<String> {
+        // Validate with Risk Manager
         let (maker_amount, taker_amount) = intent.calculate_amounts();
         let order_size_usdt = match intent.side {
-            // For Buy, we pay Maker Amount (USDC)
             crate::types::order::OrderSide::Buy => {
-                // Assuming USDC is 18 decimals, converting rough float for risk check
-                // accurate conversion: maker_amount / 1e18
                 let amount_str = maker_amount.to_string();
                 amount_str.parse::<f64>().unwrap_or(0.0) / 1e18
             }
-            // For Sell, we receive Taker Amount (USDC)
             crate::types::order::OrderSide::Sell => {
                 let amount_str = taker_amount.to_string();
                 amount_str.parse::<f64>().unwrap_or(0.0) / 1e18
             }
         };
 
-        // Validate with Risk Manager
         self.risk_manager.lock().await.validate_pre_trade(
             &intent.market_id,
             0.0, // Expected profit unknown for single order
             order_size_usdt,
         )?;
-
-        self.acquire_with_ttl(&intent).await?;
 
         let order = Order::new(
             self.effective_maker(),

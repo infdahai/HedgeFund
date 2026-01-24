@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{TimeZone, Utc};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use sysinfo::{Pid, System};
 use tracing::info;
 
 use crate::strategy::arbitrage::ArbitrageConfig;
@@ -36,6 +37,7 @@ pub fn run() -> Result<()> {
                 estimated_mb = (estimated_bytes as f64) / (1024.0 * 1024.0),
                 "loaded market ticks for sweep"
             );
+            log_memory_usage(config.max_mem_gb)?;
             let results = sweep::run_sweep(&markets, &market_metadata, &config);
             report::write_sweep_report(&config.output, &results)
         }
@@ -45,6 +47,7 @@ pub fn run() -> Result<()> {
                 estimated_mb = (estimated_bytes as f64) / (1024.0 * 1024.0),
                 "loaded market ticks for validation"
             );
+            log_memory_usage(config.max_mem_gb)?;
             let (train, test) = sweep::split_by_time(&markets, 0.7);
             let validation_results =
                 sweep::validate_configs(&train, &test, &market_metadata, &config, 3);
@@ -135,4 +138,31 @@ fn format_date(ts_us: i64) -> String {
         .single()
         .map(|value| value.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn log_memory_usage(max_mem_gb: Option<f64>) -> Result<()> {
+    let mut system = System::new();
+    let pid = Pid::from_u32(std::process::id());
+    system.refresh_process(pid);
+
+    let Some(process) = system.process(pid) else {
+        info!("memory usage unavailable for research process");
+        return Ok(());
+    };
+
+    let rss_kb = process.memory();
+    let rss_gb = rss_kb as f64 / (1024.0 * 1024.0);
+    info!(rss_gb = rss_gb, "research memory usage");
+
+    if let Some(max) = max_mem_gb {
+        if rss_gb > max {
+            return Err(anyhow!(
+                "memory usage {:.2} GB exceeds max-mem-gb {:.2} GB",
+                rss_gb,
+                max
+            ));
+        }
+    }
+
+    Ok(())
 }

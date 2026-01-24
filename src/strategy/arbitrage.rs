@@ -4,6 +4,41 @@ pub use crate::strategy::core::detector::{
 };
 pub use crate::strategy::core::fees::{fee_amount, fee_rate, quote_fee, FeeConfig, FeeQuote};
 pub use crate::strategy::core::TradeSide;
+use crate::types::order::{OrderIntent, OrderSide};
+use crate::types::OrderPriority;
+use alloy_primitives::U256;
+use std::str::FromStr;
+
+pub fn opportunity_to_order_intents(opportunity: &ArbitrageOpportunity) -> Vec<OrderIntent> {
+    let priority = match opportunity.arb_type {
+        ArbitrageType::NegRisk => OrderPriority::Critical,
+        ArbitrageType::YesNo | ArbitrageType::MintSell => OrderPriority::High,
+        ArbitrageType::SpreadAnomaly => OrderPriority::Medium,
+    };
+
+    opportunity
+        .legs
+        .iter()
+        .map(|leg| {
+            let side = match leg.side {
+                TradeSide::Buy => OrderSide::Buy,
+                TradeSide::Sell => OrderSide::Sell,
+            };
+
+            let token_id = U256::from_str(&leg.token_id).unwrap_or(U256::ZERO);
+            let quantity = U256::from((leg.size * 1e18) as u128);
+
+            OrderIntent::new(
+                opportunity.market_id.clone(),
+                token_id,
+                side,
+                leg.price,
+                quantity,
+            )
+            .with_priority(priority)
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

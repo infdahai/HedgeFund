@@ -1039,9 +1039,30 @@ println!("Proxy/Safe: {}", proxy_address);
 
 * **Data Plane**: Ingests external data streams (WebSocket, REST, Blockchain). No dependencies on Control/Execution planes.
 * **Control Plane**: Makes trading decisions (Strategy Engine, Position Manager, Risk Manager).
-* **Execution Plane**: Executes orders with rate limiting and confirmation using `tokio::broadcast` for the Event Bus.
+* **Execution Plane**: Executes orders via a kernel event bus (`tokio::mpsc`) feeding a single Strategy Engine and a priority execution queue.
 * **Shared Services**: Config, cache/state, metrics/logging, and recorder provide cross-plane support.
 * **Environment Contexts**: Live, scan-only, and backtest/research reuse the same core flow with different adapters.
+
+### 4.1.1 Kernel Event Bus + Execution Queue (Runtime)
+
+```mermaid
+flowchart LR
+    WS[WebSocket Market Data] -->|MarketData| BUS[Event Bus<br/>mpsc(4096)]
+    Scanner[Local Scanner] -->|Signal| BUS
+    Ireland[Cross-Platform Signal] -->|Signal| BUS
+    WS -->|OrderUpdate| BUS
+
+    BUS -->|EventEnvelope| Engine[StrategyEngine<br/>single consumer]
+    Engine -->|StrategyCommand| Queue[PriorityQueue<br/>max 1024]
+    Queue -->|TTL check at dequeue<br/>50ms drop| Gate[RateLimiter<br/>15 TPS]
+    Gate --> Gateway[OrderGateway]
+    Gateway --> REST[REST API]
+```
+
+**Runtime Notes:**
+- The kernel bus serializes all inputs for deterministic ordering and replay.
+- Orders are dropped at dequeue if they exceed TTL, or evicted on enqueue when the queue is full.
+- The gateway uses unthrottled submission after the queue and rate limiter gate.
 
 ### 4.2 Order Confirmation Flow
 
@@ -2943,6 +2964,10 @@ resource "aws_cloudwatch_metric_alarm" "upload_failure" {
 ### Stage C: Research Backend (offline)
 
 **Intent**: Convert recorded data into validated strategy parameters using the **exact same logic** as production, but running offline against Parquet history.
+
+**Status**: Steps 5-9 (microstructure, sweep, validation, JSON export, ROCE) are implemented in the research module:
+- `src/research/mod.rs`, `src/research/config.rs`, `src/research/report.rs`
+- `src/research/microstructure.rs`, `src/research/sweep.rs`, `src/research/sim.rs`
 
 #### 1. Architecture: The Shared Kernel Pattern
 
