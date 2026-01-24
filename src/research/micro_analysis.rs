@@ -10,7 +10,7 @@ use crate::strategy::core::{MarketOrderbook, OrderbookSide};
 
 pub fn analyze_market_microstructure(
     markets: &HashMap<String, Vec<MarketTick>>,
-    config: &CliConfig,
+    _config: &CliConfig,
 ) -> Result<()> {
     let mut all_features = Vec::new();
 

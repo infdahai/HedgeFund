@@ -6,12 +6,17 @@ fn main() -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "polars")]
-fn main() -> anyhow::Result<()> {
-    use std::collections::HashMap;
-    use std::fs::{self, File};
-    use std::path::PathBuf;
+use chrono::Timelike;
+#[cfg(feature = "polars")]
+use std::collections::HashMap;
+#[cfg(feature = "polars")]
+use std::path::PathBuf;
 
-    use anyhow::{anyhow, Context, Result};
+#[cfg(feature = "polars")]
+fn main() -> anyhow::Result<()> {
+    use std::fs::{self, File};
+
+    use anyhow::{anyhow, Context};
     use glob::glob;
     use polars::io::parquet::write::ParquetWriter;
     use polars::prelude::*;
@@ -84,7 +89,7 @@ struct SnapshotRow {
 fn parse_args() -> anyhow::Result<(PathBuf, PathBuf)> {
     use std::env;
 
-    use anyhow::{anyhow, Context, Result};
+    use anyhow::{anyhow, Context};
 
     let mut input_dir = PathBuf::from("/Users/disaster/workspace/code/test/backtest_data");
     let mut output_dir = PathBuf::from("data/parquet");
