@@ -151,3 +151,172 @@ fn calc_ofi(
         None => 0.0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_orderbook(bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)>) -> MarketOrderbook {
+        MarketOrderbook {
+            pair: "test".to_string(),
+            bids: bids
+                .into_iter()
+                .map(|(p, s)| OrderbookSide { price: p, size: s })
+                .collect(),
+            asks: asks
+                .into_iter()
+                .map(|(p, s)| OrderbookSide { price: p, size: s })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_obi_strong_buy() {
+        // Heavy bid pressure: 1000 bid vs 100 ask
+        let obi = calc_obi(1000.0, 100.0);
+        assert!(obi > 0.7, "Expected strong buy signal, got {}", obi);
+        assert!(obi < 1.0, "OBI should be < 1.0");
+    }
+
+    #[test]
+    fn test_obi_strong_sell() {
+        // Heavy ask pressure: 100 bid vs 1000 ask
+        let obi = calc_obi(100.0, 1000.0);
+        assert!(obi < -0.7, "Expected strong sell signal, got {}", obi);
+        assert!(obi > -1.0, "OBI should be > -1.0");
+    }
+
+    #[test]
+    fn test_obi_neutral() {
+        let obi = calc_obi(500.0, 500.0);
+        assert!(
+            (obi - 0.0).abs() < 0.001,
+            "Expected neutral OBI ~0, got {}",
+            obi
+        );
+    }
+
+    #[test]
+    fn test_obi_zero_depth() {
+        let obi = calc_obi(0.0, 0.0);
+        assert_eq!(obi, 0.0, "Zero depth should return 0");
+    }
+
+    #[test]
+    fn test_spread_bps_calculation() {
+        let ob = make_orderbook(vec![(0.50, 100.0)], vec![(0.51, 100.0)]);
+        let feature =
+            MicrostructureFeature::from_orderbook("123", "123-YES", &ob, None, 0).unwrap();
+
+        // spread = 0.51 - 0.50 = 0.01
+        // mid = 0.505
+        // spread_bps = 0.01 / 0.505 * 10000 ≈ 198.02
+        assert!(
+            (feature.spread_bps - 198.02).abs() < 1.0,
+            "Expected ~198 bps, got {}",
+            feature.spread_bps
+        );
+    }
+
+    #[test]
+    fn test_feature_from_orderbook() {
+        let ob = make_orderbook(
+            vec![(0.60, 800.0), (0.59, 200.0)],
+            vec![(0.61, 200.0), (0.62, 100.0)],
+        );
+
+        let feature =
+            MicrostructureFeature::from_orderbook("market1", "market1-YES", &ob, None, 1000)
+                .expect("Should create feature");
+
+        assert_eq!(feature.market_id, "market1");
+        assert_eq!(feature.pair, "market1-YES");
+        assert_eq!(feature.best_bid, 0.60);
+        assert_eq!(feature.best_ask, 0.61);
+        assert!((feature.mid_price - 0.605).abs() < 0.001);
+
+        // L1 OBI: (800 - 200) / (800 + 200) = 0.6
+        assert!(
+            (feature.obi_l1 - 0.6).abs() < 0.01,
+            "Expected OBI L1 ~0.6, got {}",
+            feature.obi_l1
+        );
+    }
+
+    #[test]
+    fn test_weighted_obi_l5() {
+        let bids = vec![
+            OrderbookSide {
+                price: 0.50,
+                size: 100.0,
+            },
+            OrderbookSide {
+                price: 0.49,
+                size: 100.0,
+            },
+            OrderbookSide {
+                price: 0.48,
+                size: 100.0,
+            },
+            OrderbookSide {
+                price: 0.47,
+                size: 100.0,
+            },
+            OrderbookSide {
+                price: 0.46,
+                size: 100.0,
+            },
+        ];
+        let asks = vec![
+            OrderbookSide {
+                price: 0.51,
+                size: 50.0,
+            },
+            OrderbookSide {
+                price: 0.52,
+                size: 50.0,
+            },
+        ];
+
+        let (bid_sum, ask_sum, obi) = calc_weighted_obi_l5(&bids, &asks);
+        assert_eq!(bid_sum, 500.0);
+        assert_eq!(ask_sum, 100.0);
+        // OBI = (500 - 100) / (500 + 100) = 400/600 = 0.667
+        assert!(
+            (obi - 0.667).abs() < 0.01,
+            "Expected weighted OBI ~0.667, got {}",
+            obi
+        );
+    }
+
+    #[test]
+    fn test_ofi_calculation() {
+        let ob1 = make_orderbook(vec![(0.50, 100.0)], vec![(0.51, 100.0)]);
+        let feature1 =
+            MicrostructureFeature::from_orderbook("m1", "m1-YES", &ob1, None, 0).unwrap();
+
+        // Bids increase, asks decrease
+        let ob2 = make_orderbook(vec![(0.50, 150.0)], vec![(0.51, 50.0)]);
+        let feature2 =
+            MicrostructureFeature::from_orderbook("m1", "m1-YES", &ob2, Some(&feature1), 100)
+                .unwrap();
+
+        // OFI = (150 - 100) - (50 - 100) = 50 - (-50) = 100
+        assert!(
+            (feature2.ofi - 100.0).abs() < 0.001,
+            "Expected OFI = 100, got {}",
+            feature2.ofi
+        );
+    }
+
+    #[test]
+    fn test_feature_empty_orderbook() {
+        let ob = MarketOrderbook {
+            pair: "test".to_string(),
+            bids: vec![],
+            asks: vec![],
+        };
+        let result = MicrostructureFeature::from_orderbook("m1", "m1-YES", &ob, None, 0);
+        assert!(result.is_none(), "Empty orderbook should return None");
+    }
+}
