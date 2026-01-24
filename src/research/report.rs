@@ -115,11 +115,11 @@ pub(crate) fn write_microstructure_report(
     }
 
     let mut contents = String::from(
-        "market_id,liquidity_availability_pct,scan_skip_rate,spread_p50,spread_p95,slippage_100_shares,opportunity_frequency_per_hour,opportunity_avg_duration_ms,opportunity_p95_duration_ms,opportunity_count\n",
+        "market_id,liquidity_availability_pct,scan_skip_rate,spread_p50,spread_p95,slippage_100_shares,opportunity_frequency_per_hour,opportunity_avg_duration_ms,opportunity_p95_duration_ms,opportunity_count,near_arb_avg_duration_ms,near_arb_p95_duration_ms,near_arb_count,maker_fill_rate_p50,maker_fill_rate_p95,categorical_opportunity_rate_per_hour,categorical_opportunity_avg_duration_ms,categorical_opportunity_p95_duration_ms,categorical_opportunity_count\n",
     );
     for report in reports {
         contents.push_str(&format!(
-            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.3},{}\n",
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{:.3},{},{:.3},{:.3},{},{:.4},{:.4},{:.6},{:.3},{:.3},{}\n",
             report.market_id,
             report.liquidity_availability_pct,
             report.scan_skip_rate,
@@ -129,7 +129,16 @@ pub(crate) fn write_microstructure_report(
             report.opportunity_frequency_per_hour,
             report.opportunity_avg_duration_ms,
             report.opportunity_p95_duration_ms,
-            report.opportunity_count
+            report.opportunity_count,
+            report.near_arb_avg_duration_ms,
+            report.near_arb_p95_duration_ms,
+            report.near_arb_count,
+            report.maker_fill_rate_p50,
+            report.maker_fill_rate_p95,
+            report.categorical_opportunity_rate_per_hour,
+            report.categorical_opportunity_avg_duration_ms,
+            report.categorical_opportunity_p95_duration_ms,
+            report.categorical_opportunity_count
         ));
     }
 
@@ -170,7 +179,7 @@ pub(crate) fn print_microstructure_summary(reports: &[MicrostructureReport]) {
     println!("  microstructure_reports: {}", reports.len());
     for report in reports {
         println!(
-            "  micro {} liquidity_pct {:.2} scan_skip_rate {:.2} spread_p50 {:.4} spread_p95 {:.4} slippage_100 {:.4} opps/hr {:.4} opp_avg_ms {:.1} opp_p95_ms {:.1} opp_count {}",
+            "  micro {} liquidity_pct {:.2} scan_skip_rate {:.2} spread_p50 {:.4} spread_p95 {:.4} slippage_100 {:.4} opps/hr {:.4} opp_avg_ms {:.1} opp_p95_ms {:.1} opp_count {} near_avg_ms {:.1} near_p95_ms {:.1} near_count {} maker_fill_p50 {:.4} maker_fill_p95 {:.4} cat_opps/hr {:.4} cat_avg_ms {:.1} cat_p95_ms {:.1} cat_count {}",
             report.market_id,
             report.liquidity_availability_pct,
             report.scan_skip_rate,
@@ -180,7 +189,16 @@ pub(crate) fn print_microstructure_summary(reports: &[MicrostructureReport]) {
             report.opportunity_frequency_per_hour,
             report.opportunity_avg_duration_ms,
             report.opportunity_p95_duration_ms,
-            report.opportunity_count
+            report.opportunity_count,
+            report.near_arb_avg_duration_ms,
+            report.near_arb_p95_duration_ms,
+            report.near_arb_count,
+            report.maker_fill_rate_p50,
+            report.maker_fill_rate_p95,
+            report.categorical_opportunity_rate_per_hour,
+            report.categorical_opportunity_avg_duration_ms,
+            report.categorical_opportunity_p95_duration_ms,
+            report.categorical_opportunity_count
         );
     }
 }

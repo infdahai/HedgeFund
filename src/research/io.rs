@@ -273,9 +273,6 @@ pub(crate) fn rows_from_df(df: &DataFrame) -> Result<Vec<SnapshotRow>> {
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
         let outcome_upper = outcome.to_uppercase();
-        if outcome_upper != "YES" && outcome_upper != "NO" {
-            continue;
-        }
 
         if best_bid <= 0.0 || best_ask <= 0.0 {
             continue;
@@ -313,19 +310,25 @@ pub(crate) fn build_market_ticks(rows: Vec<SnapshotRow>) -> HashMap<String, Vec<
         };
 
         if row.outcome == "YES" {
-            tick.yes = Some(book);
-        } else {
-            tick.no = Some(book);
+            tick.yes = Some(book.clone());
+        } else if row.outcome == "NO" {
+            tick.no = Some(book.clone());
         }
+        tick.outcomes.insert(row.outcome, book);
     }
 
     let mut result = HashMap::new();
     for (market_id, map) in markets {
         let mut ticks = Vec::new();
         for (ts, acc) in map {
-            if let (Some(yes), Some(no)) = (acc.yes, acc.no) {
-                ticks.push(MarketTick { ts_us: ts, yes, no });
-            }
+            let yes = acc.yes.unwrap_or_else(|| acc.fallback_book("YES"));
+            let no = acc.no.unwrap_or_else(|| acc.fallback_book("NO"));
+            ticks.push(MarketTick {
+                ts_us: ts,
+                yes,
+                no,
+                outcomes: acc.outcomes,
+            });
         }
         result.insert(market_id, ticks);
     }
@@ -371,6 +374,18 @@ pub(crate) fn load_confirmed_orders(db_path: Option<&str>) -> Result<Vec<Confirm
 struct TickAccumulator {
     yes: Option<TickBook>,
     no: Option<TickBook>,
+    outcomes: HashMap<String, TickBook>,
+}
+
+impl TickAccumulator {
+    fn fallback_book(&self, label: &str) -> TickBook {
+        self.outcomes.get(label).cloned().unwrap_or(TickBook {
+            best_bid: 0.0,
+            best_ask: 0.0,
+            bid_size: 0.0,
+            ask_size: 0.0,
+        })
+    }
 }
 
 fn partition_ready(path: &Path) -> bool {
