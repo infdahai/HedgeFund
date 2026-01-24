@@ -32,6 +32,14 @@ struct MicroTotals {
     opportunity_durations_ms: Vec<f64>,
     active_opportunity_start: Option<i64>,
     opportunity_count: u64,
+    near_arb_durations_ms: Vec<f64>,
+    active_near_arb_start: Option<i64>,
+    near_arb_count: u64,
+    maker_fill_rates: Vec<f64>,
+    categorical_opportunity_ticks: u64,
+    categorical_opportunity_durations_ms: Vec<f64>,
+    active_categorical_start: Option<i64>,
+    categorical_opportunity_count: u64,
     first_ts_us: Option<i64>,
     last_ts_us: Option<i64>,
 }
@@ -44,6 +52,7 @@ impl MicroTotals {
         scan_skip_rate: f64,
     ) -> MicrostructureReport {
         let mut totals = MicroTotals::default();
+        let near_arb_threshold = 1.0 + config.min_profit_rate;
         for tick in ticks {
             totals.total_ticks += 1;
             totals.first_ts_us = Some(
@@ -82,30 +91,71 @@ impl MicroTotals {
                 totals
                     .slippage_rates
                     .push((slippage_yes + slippage_no) / 2.0);
+
+                totals.maker_fill_rates.push(maker_fill_rate(
+                    yes.best_bid,
+                    yes.best_ask,
+                    no.best_bid,
+                    no.best_ask,
+                ));
             }
 
             if yes.best_ask > 0.0 && no.best_ask > 0.0 {
-                if yes.best_ask + no.best_ask < 1.0 - config.min_profit_rate {
+                let cost = yes.best_ask + no.best_ask;
+                if cost < 1.0 - config.min_profit_rate {
                     totals.opportunity_ticks += 1;
                     if totals.active_opportunity_start.is_none() {
                         totals.active_opportunity_start = Some(tick.ts_us);
                         totals.opportunity_count += 1;
                     }
                 } else if let Some(start_ts) = totals.active_opportunity_start.take() {
-                    let duration_ms = ((tick.ts_us - start_ts) as f64) / 1000.0;
-                    if duration_ms >= 0.0 {
-                        totals.opportunity_durations_ms.push(duration_ms);
+                    record_duration(&mut totals.opportunity_durations_ms, tick.ts_us, start_ts);
+                }
+
+                if cost <= near_arb_threshold {
+                    if totals.active_near_arb_start.is_none() {
+                        totals.active_near_arb_start = Some(tick.ts_us);
+                        totals.near_arb_count += 1;
                     }
+                } else if let Some(start_ts) = totals.active_near_arb_start.take() {
+                    record_duration(&mut totals.near_arb_durations_ms, tick.ts_us, start_ts);
+                }
+            }
+
+            if let Some(categorical_cost) = categorical_cost(tick) {
+                if categorical_cost < 1.0 - config.min_profit_rate {
+                    totals.categorical_opportunity_ticks += 1;
+                    if totals.active_categorical_start.is_none() {
+                        totals.active_categorical_start = Some(tick.ts_us);
+                        totals.categorical_opportunity_count += 1;
+                    }
+                } else if let Some(start_ts) = totals.active_categorical_start.take() {
+                    record_duration(
+                        &mut totals.categorical_opportunity_durations_ms,
+                        tick.ts_us,
+                        start_ts,
+                    );
                 }
             }
         }
 
         if let Some(start_ts) = totals.active_opportunity_start.take() {
             let end_ts = totals.last_ts_us.unwrap_or(start_ts);
-            let duration_ms = ((end_ts - start_ts) as f64) / 1000.0;
-            if duration_ms >= 0.0 {
-                totals.opportunity_durations_ms.push(duration_ms);
-            }
+            record_duration(&mut totals.opportunity_durations_ms, end_ts, start_ts);
+        }
+
+        if let Some(start_ts) = totals.active_near_arb_start.take() {
+            let end_ts = totals.last_ts_us.unwrap_or(start_ts);
+            record_duration(&mut totals.near_arb_durations_ms, end_ts, start_ts);
+        }
+
+        if let Some(start_ts) = totals.active_categorical_start.take() {
+            let end_ts = totals.last_ts_us.unwrap_or(start_ts);
+            record_duration(
+                &mut totals.categorical_opportunity_durations_ms,
+                end_ts,
+                start_ts,
+            );
         }
 
         totals.finish(market_id.to_string(), scan_skip_rate)
@@ -123,6 +173,14 @@ impl MicroTotals {
         let slippage_100 = percentile(&mut self.slippage_rates, 0.50);
         let opportunity_avg_duration_ms = average(&self.opportunity_durations_ms);
         let opportunity_p95_duration_ms = percentile(&mut self.opportunity_durations_ms, 0.95);
+        let near_arb_avg_duration_ms = average(&self.near_arb_durations_ms);
+        let near_arb_p95_duration_ms = percentile(&mut self.near_arb_durations_ms, 0.95);
+        let maker_fill_rate_p50 = percentile(&mut self.maker_fill_rates, 0.50);
+        let maker_fill_rate_p95 = percentile(&mut self.maker_fill_rates, 0.95);
+        let categorical_opportunity_avg_duration_ms =
+            average(&self.categorical_opportunity_durations_ms);
+        let categorical_opportunity_p95_duration_ms =
+            percentile(&mut self.categorical_opportunity_durations_ms, 0.95);
 
         let hours = match (self.first_ts_us, self.last_ts_us) {
             (Some(start), Some(end)) if end > start => {
@@ -132,6 +190,11 @@ impl MicroTotals {
         };
         let opp_frequency = if hours > 0.0 {
             self.opportunity_ticks as f64 / hours
+        } else {
+            0.0
+        };
+        let categorical_frequency = if hours > 0.0 {
+            self.categorical_opportunity_ticks as f64 / hours
         } else {
             0.0
         };
@@ -147,6 +210,15 @@ impl MicroTotals {
             opportunity_avg_duration_ms,
             opportunity_p95_duration_ms,
             opportunity_count: self.opportunity_count,
+            near_arb_avg_duration_ms,
+            near_arb_p95_duration_ms,
+            near_arb_count: self.near_arb_count,
+            maker_fill_rate_p50,
+            maker_fill_rate_p95,
+            categorical_opportunity_rate_per_hour: categorical_frequency,
+            categorical_opportunity_avg_duration_ms,
+            categorical_opportunity_p95_duration_ms,
+            categorical_opportunity_count: self.categorical_opportunity_count,
         }
     }
 }
@@ -171,6 +243,18 @@ fn slippage_rate_for_size(
     base + impact
 }
 
+fn maker_fill_rate(yes_bid: f64, yes_ask: f64, no_bid: f64, no_ask: f64) -> f64 {
+    let yes_mid = (yes_bid + yes_ask) / 2.0;
+    let no_mid = (no_bid + no_ask) / 2.0;
+    if yes_mid <= 0.0 || no_mid <= 0.0 {
+        return 0.0;
+    }
+    let yes_margin = ((yes_ask - yes_mid) / yes_mid).max(0.0);
+    let no_margin = ((no_ask - no_mid) / no_mid).max(0.0);
+    let avg_margin = (yes_margin + no_margin) / 2.0;
+    (1.0 - avg_margin * 10.0).clamp(0.0, 1.0)
+}
+
 fn percentile(values: &mut Vec<f64>, quantile: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -185,4 +269,33 @@ fn average(values: &[f64]) -> f64 {
         return 0.0;
     }
     values.iter().sum::<f64>() / values.len() as f64
+}
+
+fn record_duration(target: &mut Vec<f64>, end_ts_us: i64, start_ts_us: i64) {
+    let duration_ms = ((end_ts_us - start_ts_us) as f64) / 1000.0;
+    if duration_ms >= 0.0 {
+        target.push(duration_ms);
+    }
+}
+
+fn categorical_cost(tick: &MarketTick) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for (outcome, book) in &tick.outcomes {
+        let upper = outcome.to_uppercase();
+        if upper == "YES" || upper == "NO" {
+            continue;
+        }
+        if book.best_ask <= 0.0 {
+            return None;
+        }
+        sum += book.best_ask;
+        count += 1;
+    }
+
+    if count >= 3 {
+        Some(sum)
+    } else {
+        None
+    }
 }
