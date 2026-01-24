@@ -91,10 +91,6 @@ harness = false
 name = "sqlite_to_parquet"
 path = "src/bin/sqlite_to_parquet.rs"
 
-[[bin]]
-name = "forensics"
-path = "src/bin/forensics.rs"
-
 [profile.release]
 opt-level = 3
 lto = "fat"
