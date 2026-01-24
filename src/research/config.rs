@@ -33,6 +33,7 @@ pub(crate) struct CliConfig {
     pub(crate) sweep_min_profit_rates: Option<Vec<f64>>,
     pub(crate) sweep_min_liquidities: Option<Vec<f64>>,
     pub(crate) sweep_gas_costs: Option<Vec<f64>>,
+    pub(crate) max_mem_gb: Option<f64>,
 }
 
 pub(crate) fn parse_args() -> Result<CliConfig> {
@@ -54,6 +55,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
     let mut sweep_min_profit_rates = None;
     let mut sweep_min_liquidities = None;
     let mut sweep_gas_costs = None;
+    let mut max_mem_gb = None;
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -159,6 +161,14 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
                     .parse()
                     .context("invalid --confirm-delay-us")?;
             }
+            "--max-mem-gb" => {
+                max_mem_gb = Some(
+                    args.next()
+                        .context("--max-mem-gb requires a value")?
+                        .parse()
+                        .context("invalid --max-mem-gb")?,
+                );
+            }
             "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -186,6 +196,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
         sweep_min_profit_rates,
         sweep_min_liquidities,
         sweep_gas_costs,
+        max_mem_gb,
     })
 }
 
@@ -194,7 +205,7 @@ fn print_help() {
         "research --mode <backtest|simulate|microstructure|sweep|validate> --input <glob> --output <csv>
     [--scan-stats <glob>] [--output-microstructure <csv>] [--market-id <id>] [--initial-balance <usdt>]
     [--min-profit-rate <rate>] [--min-liquidity <qty>] [--min-order-notional <usdt>]
-    [--min-fee <usdt>] [--gas-cost-usd <usdt>] [--confirm-delay-us <micros>]
+    [--min-fee <usdt>] [--gas-cost-usd <usdt>] [--confirm-delay-us <micros>] [--max-mem-gb <gb>]
     [--sweep-min-profit-rate <csv>] [--sweep-min-liquidity <csv>] [--sweep-gas-costs <csv>]
     [--confirmed-db <path>] [--market-metadata <path>]\n\nDefaults:\n  --mode backtest\n  --input data/parquet/orderbook_snapshots_v1/date=*/hour=*/*.parquet\n  --output reports/potential_trades.csv\n  --scan-stats data/parquet/scan_stats_v1/date=*/hour=*/*.parquet\n  --initial-balance 1000\n  --min-profit-rate 0.005\n  --min-liquidity 0\n  --min-order-notional 1.30\n  --min-fee 0.50\n  --gas-cost-usd 0.60\n  --confirm-delay-us 3000000\n  --confirmed-db (unset)\n  --market-metadata (unset)"
     );

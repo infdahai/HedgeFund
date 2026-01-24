@@ -95,6 +95,7 @@ pub(crate) fn simulate_market(
     } else {
         0.0
     };
+    // ROCE: return on capital employed relative to average locked capital.
     let return_on_capital_employed = if avg_locked > 0.0 {
         (state.balance - config.initial_balance) / avg_locked
     } else {
