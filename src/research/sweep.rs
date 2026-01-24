@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use sysinfo::{System, SystemExt};
+use sysinfo::System;
 
 use crate::strategy::arbitrage::ArbitrageConfig;
 
@@ -190,8 +190,8 @@ pub(crate) fn data_period(markets: &HashMap<String, Vec<MarketTick>>) -> Option<
     let mut max_ts: Option<i64> = None;
     for ticks in markets.values() {
         for tick in ticks {
-            min_ts = Some(min_ts.map_or(tick.ts_us, |value| value.min(tick.ts_us)));
-            max_ts = Some(max_ts.map_or(tick.ts_us, |value| value.max(tick.ts_us)));
+            min_ts = Some(min_ts.map_or(tick.ts_us, |value: i64| value.min(tick.ts_us)));
+            max_ts = Some(max_ts.map_or(tick.ts_us, |value: i64| value.max(tick.ts_us)));
         }
     }
     match (min_ts, max_ts) {

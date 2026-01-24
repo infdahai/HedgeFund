@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod detector;
 pub mod fees;
+pub mod microstructure;
 pub mod risk;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,4 +97,5 @@ pub use detector::{
     ArbitrageType, OutcomeOrderbook,
 };
 pub use fees::{fee_amount, fee_rate, quote_fee, FeeConfig, FeeQuote};
+pub use microstructure::MicrostructureFeature;
 pub use risk::{RiskRules, RiskSnapshot};

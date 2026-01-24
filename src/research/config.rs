@@ -11,6 +11,7 @@ pub(crate) enum RunMode {
     Microstructure,
     Sweep,
     Validate,
+    Features,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub(crate) struct CliConfig {
     pub(crate) output: String,
     pub(crate) scan_stats_input: String,
     pub(crate) output_microstructure: Option<String>,
+    pub(crate) output_features: Option<String>,
     pub(crate) market_id: Option<String>,
     pub(crate) confirmed_db: Option<String>,
     pub(crate) market_metadata: Option<String>,
@@ -42,6 +44,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
     let mut output = "reports/potential_trades.csv".to_string();
     let mut scan_stats_input = "data/parquet/scan_stats_v1/date=*/hour=*/*.parquet".to_string();
     let mut output_microstructure = None;
+    let mut output_features = None;
     let mut market_id = None;
     let mut confirmed_db = None;
     let mut market_metadata = None;
@@ -67,6 +70,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
                     "microstructure" => RunMode::Microstructure,
                     "sweep" => RunMode::Sweep,
                     "validate" | "validation" => RunMode::Validate,
+                    "features" => RunMode::Features,
                     _ => return Err(anyhow!("unknown mode: {mode_str}")),
                 };
             }
@@ -80,6 +84,9 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
                     args.next()
                         .context("--output-microstructure requires a value")?,
                 );
+            }
+            "--output-features" => {
+                output_features = Some(args.next().context("--output-features requires a value")?);
             }
             "--market-id" => market_id = Some(args.next().context("--market-id requires a value")?),
             "--confirmed-db" => {
@@ -183,6 +190,7 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
         output,
         scan_stats_input,
         output_microstructure,
+        output_features,
         market_id,
         confirmed_db,
         market_metadata,
@@ -202,8 +210,8 @@ pub(crate) fn parse_args() -> Result<CliConfig> {
 
 fn print_help() {
     println!(
-        "research --mode <backtest|simulate|microstructure|sweep|validate> --input <glob> --output <csv>
-    [--scan-stats <glob>] [--output-microstructure <csv>] [--market-id <id>] [--initial-balance <usdt>]
+        "research --mode <backtest|simulate|microstructure|sweep|validate|features> --input <glob> --output <csv>
+    [--scan-stats <glob>] [--output-microstructure <csv>] [--output-features <csv>] [--market-id <id>] [--initial-balance <usdt>]
     [--min-profit-rate <rate>] [--min-liquidity <qty>] [--min-order-notional <usdt>]
     [--min-fee <usdt>] [--gas-cost-usd <usdt>] [--confirm-delay-us <micros>] [--max-mem-gb <gb>]
     [--sweep-min-profit-rate <csv>] [--sweep-min-liquidity <csv>] [--sweep-gas-costs <csv>]

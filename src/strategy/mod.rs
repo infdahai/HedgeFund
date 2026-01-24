@@ -3,6 +3,7 @@ pub mod backtest;
 pub mod core;
 pub mod engine;
 pub mod market_scanner;
+pub mod microstructure;
 pub mod orderbook_store;
 pub mod rotator;
 pub mod scoreboard;

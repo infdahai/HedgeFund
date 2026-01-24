@@ -153,12 +153,28 @@ pub(crate) fn load_scan_skip_rates(config: &CliConfig) -> Result<(HashMap<String
             Some(value) => value.to_string(),
             None => continue,
         };
-        let total_checked = value_u64_at(grouped.column("yesno_checked")?, idx)?
-            + value_u64_at(grouped.column("mint_sell_checked")?, idx)?
-            + value_u64_at(grouped.column("neg_risk_checked")?, idx)?;
-        let total_found = value_u64_at(grouped.column("yesno_found")?, idx)?
-            + value_u64_at(grouped.column("mint_sell_found")?, idx)?
-            + value_u64_at(grouped.column("neg_risk_found")?, idx)?;
+        let total_checked = value_u64_at(
+            grouped.column("yesno_checked")?.as_materialized_series(),
+            idx,
+        )? + value_u64_at(
+            grouped
+                .column("mint_sell_checked")?
+                .as_materialized_series(),
+            idx,
+        )? + value_u64_at(
+            grouped.column("neg_risk_checked")?.as_materialized_series(),
+            idx,
+        )?;
+        let total_found =
+            value_u64_at(grouped.column("yesno_found")?.as_materialized_series(), idx)?
+                + value_u64_at(
+                    grouped.column("mint_sell_found")?.as_materialized_series(),
+                    idx,
+                )?
+                + value_u64_at(
+                    grouped.column("neg_risk_found")?.as_materialized_series(),
+                    idx,
+                )?;
         let rate = if total_checked > 0 {
             let skipped = total_checked.saturating_sub(total_found);
             skipped as f64 / total_checked as f64 * 100.0
@@ -322,8 +338,8 @@ pub(crate) fn build_market_ticks(rows: Vec<SnapshotRow>) -> HashMap<String, Vec<
     for (market_id, map) in markets {
         let mut ticks = Vec::new();
         for (ts, acc) in map {
-            let yes = acc.yes.unwrap_or_else(|| acc.fallback_book("YES"));
-            let no = acc.no.unwrap_or_else(|| acc.fallback_book("NO"));
+            let yes = acc.yes.clone().unwrap_or_else(|| acc.fallback_book("YES"));
+            let no = acc.no.clone().unwrap_or_else(|| acc.fallback_book("NO"));
             ticks.push(MarketTick {
                 ts_us: ts,
                 yes,
