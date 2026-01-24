@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         .context("BSC_RPC_URL or OPINION_RPC_URL_PRIMARY is not set")?;
 
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let latest_block = fetch_latest_block(&client, &rpc_url).await?;
+    let (latest_block, latest_ts) = fetch_latest_block_info(&client, &rpc_url).await?;
     let start_block =
         start_block.unwrap_or_else(|| latest_block.saturating_sub(DEFAULT_BLOCK_RANGE));
     let end_block = end_block.unwrap_or(latest_block);
@@ -75,7 +75,6 @@ async fn main() -> Result<()> {
     );
 
     let mut rows = Vec::new();
-    let mut block_cache: HashMap<u64, i64> = HashMap::new();
     let target_topic = pad_topic_address(&target_address)?;
 
     let mut current = start_block;
@@ -131,10 +130,9 @@ async fn main() -> Result<()> {
 
         rows.extend(
             process_logs(
-                &client,
-                &rpc_url,
                 &logs_in,
-                &mut block_cache,
+                latest_block,
+                latest_ts,
                 &target_address,
                 "BUY/IN",
                 features.as_ref(),
@@ -144,10 +142,9 @@ async fn main() -> Result<()> {
 
         rows.extend(
             process_logs(
-                &client,
-                &rpc_url,
                 &logs_out,
-                &mut block_cache,
+                latest_block,
+                latest_ts,
                 &target_address,
                 "SELL/OUT",
                 features.as_ref(),
@@ -234,9 +231,13 @@ fn parse_args() -> Result<(
     ))
 }
 
-async fn fetch_latest_block(client: &Client, rpc_url: &str) -> Result<u64> {
-    let payload =
-        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]});
+async fn fetch_latest_block_info(client: &Client, rpc_url: &str) -> Result<(u64, i64)> {
+    let payload = serde_json::json!({
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"eth_getBlockByNumber",
+        "params":["latest", false]
+    });
     let resp: Value = client
         .post(rpc_url)
         .json(&payload)
@@ -246,9 +247,18 @@ async fn fetch_latest_block(client: &Client, rpc_url: &str) -> Result<u64> {
         .await?;
     let result = resp
         .get("result")
+        .ok_or_else(|| anyhow!("missing latest block result"))?;
+    let block_hex = result
+        .get("number")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("missing eth_blockNumber result"))?;
-    hex_to_u64(result).context("invalid block number hex")
+        .ok_or_else(|| anyhow!("missing latest block number"))?;
+    let ts_hex = result
+        .get("timestamp")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("missing latest block timestamp"))?;
+    let block = hex_to_u64(block_hex).context("invalid latest block number")?;
+    let ts = hex_to_u64(ts_hex).context("invalid latest block timestamp")? as i64;
+    Ok((block, ts))
 }
 
 async fn fetch_logs(
@@ -289,10 +299,9 @@ async fn fetch_logs(
 }
 
 async fn process_logs(
-    client: &Client,
-    rpc_url: &str,
     logs: &[RpcLog],
-    block_cache: &mut HashMap<u64, i64>,
+    latest_block: u64,
+    latest_ts: i64,
     target_address: &str,
     direction: &str,
     features: Option<&HashMap<i64, OBIStats>>,
@@ -300,14 +309,7 @@ async fn process_logs(
     let mut rows = Vec::with_capacity(logs.len());
     for log in logs {
         let block_number = hex_to_u64(&log.block_number).unwrap_or(0);
-        let timestamp = match block_cache.get(&block_number) {
-            Some(value) => *value,
-            None => {
-                let ts = fetch_block_timestamp(client, rpc_url, block_number).await?;
-                block_cache.insert(block_number, ts);
-                ts
-            }
-        };
+        let timestamp = estimate_block_timestamp(latest_block, latest_ts, block_number);
 
         let (from, to) = decode_transfer_topics(&log.topics);
         let obi_estimate = features.and_then(|map| {
@@ -330,29 +332,12 @@ async fn process_logs(
     Ok(rows)
 }
 
-async fn fetch_block_timestamp(client: &Client, rpc_url: &str, block_number: u64) -> Result<i64> {
-    let payload = serde_json::json!({
-        "jsonrpc":"2.0",
-        "id":1,
-        "method":"eth_getBlockByNumber",
-        "params":[format!("0x{:x}", block_number), false]
-    });
-    let resp: Value = client
-        .post(rpc_url)
-        .json(&payload)
-        .send()
-        .await?
-        .json()
-        .await?;
-    let result = resp
-        .get("result")
-        .ok_or_else(|| anyhow!("missing block result"))?;
-    let timestamp = result
-        .get("timestamp")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("missing block timestamp"))?;
-    let ts = hex_to_u64(timestamp).context("invalid block timestamp")? as i64;
-    Ok(ts)
+fn estimate_block_timestamp(latest_block: u64, latest_ts: i64, block_number: u64) -> i64 {
+    if latest_block <= block_number {
+        return latest_ts;
+    }
+    let diff = latest_block - block_number;
+    latest_ts.saturating_sub((diff * 3) as i64)
 }
 
 fn pad_topic_address(address: &str) -> Result<String> {
