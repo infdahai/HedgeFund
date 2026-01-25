@@ -24,6 +24,7 @@ pub(crate) struct MarketTick {
     pub(crate) ts_us: i64,
     pub(crate) yes: TickBook,
     pub(crate) no: TickBook,
+    pub(crate) outcomes: HashMap<String, TickBook>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ pub(crate) struct TradeRecord {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ConfirmedOrderRecord {
     pub(crate) market_id: String,
     pub(crate) side: String,
@@ -58,6 +60,15 @@ pub(crate) struct MicrostructureReport {
     pub(crate) opportunity_avg_duration_ms: f64,
     pub(crate) opportunity_p95_duration_ms: f64,
     pub(crate) opportunity_count: u64,
+    pub(crate) near_arb_avg_duration_ms: f64,
+    pub(crate) near_arb_p95_duration_ms: f64,
+    pub(crate) near_arb_count: u64,
+    pub(crate) maker_fill_rate_p50: f64,
+    pub(crate) maker_fill_rate_p95: f64,
+    pub(crate) categorical_opportunity_rate_per_hour: f64,
+    pub(crate) categorical_opportunity_avg_duration_ms: f64,
+    pub(crate) categorical_opportunity_p95_duration_ms: f64,
+    pub(crate) categorical_opportunity_count: u64,
 }
 
 #[derive(Debug, Clone)]

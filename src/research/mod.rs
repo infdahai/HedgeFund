@@ -9,8 +9,10 @@ use crate::strategy::arbitrage::ArbitrageConfig;
 use crate::telemetry;
 
 mod config;
+mod features;
 mod io;
 mod metadata;
+mod micro_analysis;
 mod microstructure;
 mod report;
 mod sim;
@@ -21,6 +23,10 @@ pub fn run() -> Result<()> {
     let _guards = telemetry::init_telemetry();
     let config = config::parse_args()?;
     let df = io::load_snapshots(&config)?;
+    if config.mode == config::RunMode::Features {
+        return features::write_features(&df, &config);
+    }
+
     let rows = io::rows_from_df(&df)?;
     let markets = io::build_market_ticks(rows);
     let market_metadata = metadata::load_market_metadata(config.market_metadata.as_deref())?;
@@ -30,7 +36,11 @@ pub fn run() -> Result<()> {
 
     match config.mode {
         config::RunMode::Backtest => run_backtest(&markets, &market_metadata, &config),
-        config::RunMode::Microstructure => run_microstructure(&markets, &config),
+        config::RunMode::Microstructure => {
+            info!("Generating microstructure features (ETL)...");
+            micro_analysis::analyze_market_microstructure(&markets, &config)?;
+            run_microstructure(&markets, &config)
+        }
         config::RunMode::Sweep => {
             info!(
                 total_ticks = total_ticks,
@@ -66,6 +76,7 @@ pub fn run() -> Result<()> {
                 &data_end,
             )
         }
+        config::RunMode::Features => Ok(()),
     }
 }
 

@@ -382,11 +382,8 @@ impl DatasetWriter {
                 .map_err(|err| PolarsError::ComputeError(err.to_string().into()))?
         };
 
-        let temp_path = self
-            .current_temp_path
-            .clone()
-            .unwrap_or_else(|| "".to_string());
-        let final_path = self.current_path.clone().unwrap_or_else(|| "".to_string());
+        let temp_path = self.current_temp_path.clone().unwrap_or_default();
+        let final_path = self.current_path.clone().unwrap_or_default();
         if !temp_path.is_empty() && !final_path.is_empty() {
             validate_parquet_footer(&temp_path)?;
             let target = Path::new(&final_path);

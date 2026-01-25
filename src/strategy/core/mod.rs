@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod detector;
 pub mod fees;
-pub mod risk;
+pub mod microstructure;
+// risk module removed - functionality merged into execution::risk_manager
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketInfo {
@@ -96,4 +97,4 @@ pub use detector::{
     ArbitrageType, OutcomeOrderbook,
 };
 pub use fees::{fee_amount, fee_rate, quote_fee, FeeConfig, FeeQuote};
-pub use risk::{RiskRules, RiskSnapshot};
+pub use microstructure::MicrostructureFeature;

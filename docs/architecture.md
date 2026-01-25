@@ -27,6 +27,7 @@
 12. [Implementation Order](https://www.google.com/search?q=%2311-implementation-order)
 13. [CI/CD Pipeline](https://www.google.com/search?q=%2312-cicd-pipeline)
 14. [New Session Prompt](https://www.google.com/search?q=%2313-new-session-prompt)
+15. [Microstructure Trading Strategy](https://www.google.com/search?q=%2314-microstructure-trading-strategy-design)
 
 ---
 
@@ -1541,6 +1542,18 @@ See `tests/small_scale_arbitrage_test.rs` for live arbitrage detection tests.
 
 See Section 11.1 (Phase 2) for ReplayTestClient usage and tests; the full research loop is in
 Section 11.2.
+
+### 5.9.7 Microstructure Trading Module
+
+**Purpose**: Implements directional trading strategies based on order book imbalance (OBI) and order flow imbalance (OFI).
+
+**Components**:
+- `MicroStrategy`: State machine managing trade lifecycle (Scanning -> Signal -> Holding -> Exit).
+- `MicrostructureFeature`: Real-time feature calculation from orderbook snapshots.
+- `MicroConfig`: Strategy parameters (thresholds, timeouts, stop-loss).
+- `MicroPosition`: Tracks PnL and exit conditions for active trades.
+
+**See Section 14 for detailed design.**
 
 ### 5.10 Telemetry Module (`src/telemetry.rs`)
 
@@ -3635,6 +3648,27 @@ Deferral guidance:
 Non-goals for this phase:
 - No direct ML inference in the hot path.
 - No S3 upload from the trading process.
+
+### 11.3 Microstructure Trading Implementation Roadmap
+
+**Phase 0: Data Validation (P0)**
+- [ ] Create `MicrostructureFeature` calculation core
+- [ ] ETL pipeline to extract features from Parquet
+- [ ] Analyze OBI predictiveness (Python/Polars)
+- [ ] **Decision Gate**: Win rate > 55% required to proceed
+
+**Phase 1: Paper Trading (P1)**
+- [ ] Implement `MicroStrategy` state machine
+- [ ] Build `paper_micro` binary
+- [ ] Run 24h simulation, validate virtual PnL
+
+**Phase 2: Live Trading (P2)**
+- [ ] Integrate order submission
+- [ ] Add `RiskManager` rules for directional trading
+- [ ] Small-scale live test (7 days)
+
+**See Section 14.6 for detailed task list.**
+
 ---
 
 ## 12. CI/CD Pipeline
@@ -3874,3 +3908,433 @@ Copy and paste the following block to start a new implementation session:
 > 
 > 
 > Please begin with **Phase 1**. Create the project structure and implement the foundation modules with tests. Each module must pass tests before moving to the next.
+
+---
+
+## 14. Microstructure Trading Strategy Design
+
+> **Purpose**: This section documents the design for transitioning from atomic arbitrage 
+> to microstructure-based directional trading, following resource-appropriate strategy selection.
+
+### 14.1 Strategic Rationale
+
+#### 14.1.1 Why Pivot from Atomic Arbitrage
+
+| Factor | Atomic Arbitrage Challenge | Microstructure Advantage |
+|--------|---------------------------|-------------------------|
+| **Opportunity Frequency** | Rare ($A+B<1$ windows) | Continuous OBI signals |
+| **Infrastructure Requirement** | Top-tier latency needed | Data analysis + patience |
+| **Competition** | Racing against MMs | Following MM capital flow |
+| **Risk Profile** | Execution risk only | Directional risk (managed) |
+
+**Core Insight**: Without co-located infrastructure, it's more profitable to 
+*follow* market maker order flow than to *compete* with them.
+
+#### 14.1.2 Core Hypothesis
+
+> **Extreme Order Book Imbalance (OBI) predicts short-term price direction.**
+
+Given BNB Chain's 3s block time, we predict price movement over **6-15 seconds (2-5 blocks)** 
+to account for chain confirmation latency.
+
+#### 14.1.3 Success Criteria
+
+| Metric | Minimum Threshold | Target |
+|--------|------------------|--------|
+| OBI > 0.7 Win Rate | > 55% | > 60% |
+| Average Holding Time | < 30s | < 15s |
+| Per-Trade Return | > 0.2% | > 0.5% |
+| Max Drawdown | < 5% | < 3% |
+| Sharpe Ratio | > 1.5 | > 2.5 |
+
+**CRITICAL**: If Phase 0 validation shows win rate < 55%, abort the strategy.
+
+---
+
+### 14.2 Core Indicators
+
+#### 14.2.1 Level 1 Imbalance (OBI_L1) - Momentum Indicator
+
+$$OBI_{L1} = \frac{Q_{Bid_1} - Q_{Ask_1}}{Q_{Bid_1} + Q_{Ask_1}}$$
+
+- **Range**: [-1, 1]
+- **Strong Buy Signal**: > 0.7 (heavy bid pressure)
+- **Strong Sell Signal**: < -0.7 (heavy ask pressure)
+- **Interpretation**: If bid size >> ask size, ask-side liquidity is about to be swept
+
+#### 14.2.2 Order Flow Imbalance (OFI) - Trend Confirmation
+
+$$OFI = \Delta Q_{Bid} - \Delta Q_{Ask}$$
+
+- **Positive OFI**: Bids accumulating, asks depleting → Bullish
+- **Negative OFI**: Asks accumulating, bids depleting → Bearish
+- **Usage**: Confirms OBI signal is strengthening, not mean-reverting
+
+#### 14.2.3 Spread Filter - Execution Quality
+
+$$Spread_{bps} = \frac{Price_{Ask_1} - Price_{Bid_1}}{Price_{Mid}} \times 10000$$
+
+- **Constraint**: Only trade when spread < 50 bps
+- **Rationale**: Wide spread = execution cost eats profit
+
+---
+
+### 14.3 Data Structures
+
+#### 14.3.1 MicrostructureFeature
+
+**File**: `src/strategy/core/microstructure.rs`
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MicrostructureFeature {
+    // Identity
+    pub market_id: String,
+    pub pair: String,
+    pub timestamp_ms: u64,
+    
+    // Price
+    pub mid_price: f64,
+    pub best_bid: f64,
+    pub best_ask: f64,
+    pub spread_bps: f64,
+    
+    // Level 1 Depth
+    pub bid_depth_l1: f64,
+    pub ask_depth_l1: f64,
+    pub obi_l1: f64,
+    
+    // Level 5 Weighted Depth
+    pub bid_depth_l5: f64,
+    pub ask_depth_l5: f64,
+    pub obi_l5: f64,
+    
+    // Order Flow (delta-based)
+    pub ofi: f64,
+    pub ofi_ema: f64,
+    
+    // Liquidity Quality
+    pub depth_ratio: f64,
+    pub total_liquidity: f64,
+    
+    // Backtest Labels (optional)
+    pub next_price_10s: Option<f64>,
+    pub next_price_30s: Option<f64>,
+}
+```
+
+#### 14.3.2 MicroConfig
+
+**File**: `src/strategy/microstructure/config.rs`
+
+```rust
+#[derive(Debug, Clone)]
+pub struct MicroConfig {
+    // Entry thresholds
+    pub enter_obi_threshold: f64,      // 0.7
+    pub enter_ofi_threshold: f64,      // 0.0
+    pub max_spread_bps: f64,           // 50.0
+    pub min_liquidity: f64,            // 100.0
+    
+    // Exit thresholds
+    pub stop_loss_pct: f64,            // 0.005 (0.5%)
+    pub take_profit_pct: f64,          // 0.015 (1.5%)
+    pub obi_reversal_threshold: f64,   // -0.3
+    pub obi_exhaustion_threshold: f64, // 0.1
+    
+    // Time limits
+    pub max_holding_time: Duration,    // 60s
+    pub signal_confirmation_ms: u64,   // 100ms
+    
+    // Position limits
+    pub max_position_per_market: f64,  // $50
+    pub min_order_notional: f64,       // $1.30
+    pub max_order_notional: f64,       // $20
+    
+    // Cooldown & Blacklist
+    pub cooldown_after_loss: Duration, // 60s
+    pub blacklist_duration: Duration,  // 1h
+    pub max_consecutive_losses: u32,   // 2
+    
+    // Fees
+    pub topic_fee_rate: f64,           // 0.02
+    pub referral_discount: f64,        // 0.10
+    pub min_fee: f64,                  // $0.50
+}
+```
+
+#### 14.3.3 MicroPosition
+
+**File**: `src/strategy/microstructure/position.rs`
+
+```rust
+#[derive(Debug, Clone)]
+pub struct MicroPosition {
+    pub market_id: String,
+    pub pair: String,
+    pub side: TradeSide,
+    pub entry_price: f64,
+    pub entry_obi: f64,
+    pub quantity: f64,
+    pub notional: f64,
+    pub entry_time: Instant,
+    pub order_id: String,
+    
+    // Dynamic tracking
+    pub peak_price: f64,
+    pub trough_price: f64,
+    pub current_pnl: f64,
+}
+```
+
+---
+
+### 14.4 State Machine Design
+
+#### 14.4.1 State Definitions
+
+```rust
+pub enum StrategyState {
+    Scanning,           // Monitoring markets for signals
+    SignalDetected,     // Signal triggered, awaiting confirmation
+    EntryPending,       // Order submitted, awaiting fill
+    Holding,            // Position open, monitoring exit signals
+    ExitPending,        // Exit order submitted, awaiting fill
+}
+
+pub enum ExitReason {
+    StopLoss,           // Price-based stop
+    TakeProfit,         // Price-based target
+    ObiReversal,        // OBI flipped direction
+    ObiExhaustion,      // OBI momentum faded
+    TimeStop,           // Max holding time exceeded
+    Manual,             // Manual intervention
+}
+```
+
+#### 14.4.2 State Transition Diagram
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    MICROSTRUCTURE STRATEGY STATE MACHINE                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│    ┌──────────┐                                                                  │
+│    │ SCANNING │◀──────────────────────────────────────────────────────────────┐  │
+│    └────┬─────┘                                                               │  │
+│         │ OBI > threshold && spread < max                                     │  │
+│         ▼                                                                     │  │
+│    ┌────────────────┐                                                         │  │
+│    │SIGNAL_DETECTED │                                                         │  │
+│    └────┬───────────┘                                                         │  │
+│         │ wait signal_confirmation_ms                                         │  │
+│         │ + signal still valid                                                │  │
+│         ▼                                                                     │  │
+│    ┌──────────────┐         order rejected/timeout                            │  │
+│    │ENTRY_PENDING │─────────────────────────────────────────────────────────▶ │  │
+│    └────┬─────────┘                                                           │  │
+│         │ order filled                                                        │  │
+│         ▼                                                                     │  │
+│    ┌─────────┐                                                                │  │
+│    │ HOLDING │                                                                │  │
+│    └────┬────┘                                                                │  │
+│         │                                                                     │  │
+│         ├─ price <= entry * (1 - stop_loss) ──▶ [StopLoss]                    │  │
+│         ├─ price >= entry * (1 + take_profit) ▶ [TakeProfit]                  │  │
+│         ├─ OBI reversed (< obi_reversal_threshold) ▶ [ObiReversal]            │  │
+│         ├─ OBI exhausted (< obi_exhaustion_threshold) ▶ [ObiExhaustion]       │  │
+│         └─ holding_time > max_holding_time ──▶ [TimeStop]                     │  │
+│                    │                                                          │  │
+│                    ▼                                                          │  │
+│              ┌────────────┐                                                   │  │
+│              │EXIT_PENDING│───────────────────────────────────────────────────┘  │
+│              └────────────┘                                                      │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 14.5 Risk Control Layer
+
+#### 14.5.1 Position-Level Rules
+
+| Rule | Threshold | Action |
+|------|-----------|--------|
+| Max Single Trade Loss | 1% of capital | Hard stop-loss |
+| Max Position per Market | $50 | Block additional entry |
+| Max Holding Time | 120s | Force exit |
+| OBI Reversal | OBI < -0.3 | Immediate exit |
+
+#### 14.5.2 Market-Level Rules
+
+| Rule | Threshold | Action |
+|------|-----------|--------|
+| Consecutive Losses per Market | 2 | Blacklist market for 1 hour |
+| Cooldown After Loss | 60s | Block re-entry |
+| Spread Too Wide | > 100 bps | Skip signal |
+
+#### 14.5.3 Account-Level Rules
+
+| Rule | Threshold | Action |
+|------|-----------|--------|
+| Daily Loss Limit | $100 | Halt trading for day |
+| Max Drawdown | 10% | Halt until manual reset |
+| Circuit Breaker | 3 consecutive system losses | Pause 1 hour |
+| Max Total Exposure | $200 | Block new positions |
+
+---
+
+### 14.6 Implementation Roadmap
+
+#### 14.6.1 Phase 0: Data Validation (1-2 weeks)
+
+**Goal**: Prove OBI has predictive power before writing trading code.
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 0.1 | Create `src/strategy/core/microstructure.rs` | 2h |
+| 0.2 | Extend `src/research/mod.rs` with micro_analysis | 1h |
+| 0.3 | Add `microstructure` subcommand to research.rs | 3h |
+| 0.4 | Run ETL on historical Parquet, output features.parquet | 2h |
+| 0.5 | Write `scripts/analyze_microstructure.py` | 2h |
+| **Gate** | Validate: OBI > 0.8 → 10s price up probability > 55% | - |
+
+**Output**: `reports/microstructure_validation.md`
+
+**Decision Point**: If win rate < 55%, STOP. Do not proceed.
+
+#### 14.6.2 Phase 1: Paper Trading (1 week)
+
+**Goal**: Validate strategy logic without real capital.
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 1.1 | Create `src/strategy/microstructure/` module | 1h |
+| 1.2 | Implement MicroConfig | 1h |
+| 1.3 | Implement MicroPosition | 1h |
+| 1.4 | Implement MicroStrategy state machine | 4h |
+| 1.5 | Create `src/bin/paper_micro.rs` | 3h |
+| 1.6 | Run 24h paper trading, collect stats | 24h |
+
+**Output**: `reports/paper_trading_24h.md`
+
+#### 14.6.3 Phase 2: Small-Scale Live (1-2 weeks)
+
+**Goal**: Validate in production with minimal capital.
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 2.1 | Integrate real order submission (limit $10-20) | 2h |
+| 2.2 | Extend RiskManager with microstructure rules | 2h |
+| 2.3 | Run 7 days live, collect metrics | 7d |
+
+**Output**: `reports/live_trading_7d.md`
+
+---
+
+### 14.7 Environment Variables
+
+```bash
+# Microstructure Strategy Configuration
+OPINION_MICRO_OBI_THRESHOLD=0.7        # Entry OBI threshold
+OPINION_MICRO_MAX_SPREAD_BPS=50        # Maximum spread in basis points
+OPINION_MICRO_STOP_LOSS_PCT=0.005      # Stop loss percentage (0.5%)
+OPINION_MICRO_TAKE_PROFIT_PCT=0.015    # Take profit percentage (1.5%)
+OPINION_MICRO_MAX_HOLDING_SECS=60      # Maximum holding time in seconds
+OPINION_MICRO_MAX_ORDER_NOTIONAL=20    # Maximum order size in USDT
+OPINION_MICRO_PAPER_MODE=true          # Enable paper trading mode
+```
+
+---
+
+### 14.8 Files to Create/Modify
+
+#### 14.8.1 New Files
+
+| File Path | Purpose | Priority |
+|-----------|---------|----------|
+| `src/strategy/core/microstructure.rs` | Feature calculation core | P0 |
+| `src/strategy/microstructure/mod.rs` | MicroStrategy state machine | P0 |
+| `src/strategy/microstructure/config.rs` | MicroConfig | P0 |
+| `src/strategy/microstructure/position.rs` | MicroPosition | P0 |
+| `src/strategy/microstructure/signals.rs` | Signal generation | P1 |
+| `src/bin/paper_micro.rs` | Paper trading entry | P0 |
+| `src/research/micro_analysis.rs` | Parquet feature extraction | P0 |
+| `scripts/analyze_microstructure.py` | Python EDA script | P1 |
+
+#### 14.8.2 Modified Files
+
+| File Path | Modification |
+|-----------|--------------|
+| `src/strategy/mod.rs` | Add `pub mod microstructure;` |
+| `src/strategy/core/mod.rs` | Add `pub mod microstructure;` |
+| `src/research/mod.rs` | Add `pub mod micro_analysis;` |
+| `src/bin/research.rs` | Add `microstructure` subcommand |
+| `src/config.rs` | Add `MicroConfig` env var loading |
+
+---
+
+### 14.9 Decision Points and Go/No-Go Criteria
+
+#### 14.9.1 Phase 0 Gate (CRITICAL)
+
+Before proceeding to Phase 1, the following must be true:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           PHASE 0 GATE CHECKLIST                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  □ Minimum 5 days of Parquet data processed                                      │
+│  □ At least 1000 OBI > 0.7 signal instances found                                │
+│  □ Win rate for OBI > 0.8 signals: ___% (MUST BE > 55%)                          │
+│  □ Average 10s price change when OBI > 0.7: ___% (SHOULD BE > 0.3%)              │
+│  □ Spread analysis shows < 50 bps in > 70% of opportunities                      │
+│                                                                                  │
+│  DECISION: [ ] PROCEED to Phase 1    [ ] ABORT strategy                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**If win rate < 55%, the microstructure strategy is NOT viable for this market.**
+
+#### 14.9.2 Phase 1 Gate
+
+Before proceeding to live trading:
+
+- [ ] Paper trading shows positive virtual PnL over 24h
+- [ ] State machine handles all edge cases (disconnects, stale data)
+- [ ] Risk controls trigger correctly (simulated stop-loss, blacklist)
+- [ ] Logging provides sufficient observability
+
+#### 14.9.3 Phase 2 Monitoring
+
+During live trading, halt if:
+
+- 3 consecutive losing trades
+- Daily loss > $20
+- Single trade loss > $5
+- Unexpected behavior (fills at wrong prices)
+
+---
+
+### 14.10 Design Decisions Summary
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Data Source | Parquet | High performance, partitioned by date/hour |
+| Paper Trading | Separate binary | Risk isolation, no impact on existing arbitrage |
+| OBI Threshold | 0.7 | Expert recommendation, balanced signal quality |
+| Token Trading | YES and NO | Double opportunities, independent position tracking |
+| Confirmation | OFI confirmation | Avoid false breakouts from OBI alone |
+| Exit Strategy | Multi-factor | Price stops + OBI reversal + time limit |
+
+---
+
+### 14.11 Related Documentation
+
+- **Section 5.9**: Strategy Module (arbitrage detector remains active)
+- **Section 11.2**: Research CLI (shares Parquet infrastructure)
+- **Section 12**: CI/CD (new tests added for microstructure module)
+- **AGENTS.md**: Development workflow and formatting standards
